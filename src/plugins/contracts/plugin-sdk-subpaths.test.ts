@@ -724,6 +724,8 @@ describe("plugin-sdk subpath exports", () => {
     expectSourceOmitsSnippet("google-model-id", "./google.js");
     expectSourceOmitsSnippet("google-model-id", "./facade-runtime.js");
     expectSourceOmitsSnippet("google-model-id", "../../extensions/");
+    expectSourceContains("google", "../../extensions/google/api.js");
+    expectSourceOmitsSnippet("google", "./facade-runtime.js");
     expectSourceOmitsSnippet("xai-model-id", "./xai.js");
     expectSourceOmitsSnippet("xai-model-id", "./facade-runtime.js");
     expectSourceOmitsSnippet("xai-model-id", "../../extensions/");

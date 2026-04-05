@@ -7,6 +7,10 @@ function pluginSource(dirName, artifactBasename = "api.js") {
   return `@openclaw/${dirName}/${artifactBasename}`;
 }
 
+function pluginSourceRelativeToPluginSdk(dirName, artifactBasename = "api.js") {
+  return `../../extensions/${dirName}/${artifactBasename}`;
+}
+
 function runtimeApiSourcePath(dirName) {
   return bundledPluginFile(dirName, "runtime-api.ts");
 }
@@ -262,6 +266,25 @@ export const GENERATED_PLUGIN_SDK_FACADES = [
   {
     subpath: "google",
     source: pluginSource("google", "api.js"),
+    directExports: {
+      applyGoogleGeminiModelDefault: pluginSourceRelativeToPluginSdk("google", "api.js"),
+      DEFAULT_GOOGLE_API_BASE_URL: pluginSourceRelativeToPluginSdk("google", "api.js"),
+      GOOGLE_GEMINI_DEFAULT_MODEL: pluginSourceRelativeToPluginSdk("google", "api.js"),
+      isGoogleGenerativeAiApi: pluginSourceRelativeToPluginSdk("google", "api.js"),
+      normalizeAntigravityModelId: pluginSourceRelativeToPluginSdk("google", "api.js"),
+      normalizeGoogleApiBaseUrl: pluginSourceRelativeToPluginSdk("google", "api.js"),
+      normalizeGoogleGenerativeAiBaseUrl: pluginSourceRelativeToPluginSdk("google", "api.js"),
+      normalizeGoogleModelId: pluginSourceRelativeToPluginSdk("google", "api.js"),
+      normalizeGoogleProviderConfig: pluginSourceRelativeToPluginSdk("google", "api.js"),
+      parseGeminiAuth: pluginSourceRelativeToPluginSdk("google", "api.js"),
+      resolveGoogleGenerativeAiApiOrigin: pluginSourceRelativeToPluginSdk("google", "api.js"),
+      resolveGoogleGenerativeAiTransport: pluginSourceRelativeToPluginSdk("google", "api.js"),
+      shouldNormalizeGoogleProviderConfig: pluginSourceRelativeToPluginSdk("google", "api.js"),
+      shouldNormalizeGoogleGenerativeAiProviderConfig: pluginSourceRelativeToPluginSdk(
+        "google",
+        "api.js",
+      ),
+    },
     exports: [
       "applyGoogleGeminiModelDefault",
       "DEFAULT_GOOGLE_API_BASE_URL",
