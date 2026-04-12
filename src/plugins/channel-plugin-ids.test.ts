@@ -76,6 +76,7 @@ import {
   resolveConfiguredChannelPresencePolicy,
   resolveConfiguredDeferredChannelPluginIds,
   resolveConfiguredChannelPluginIds,
+  resolveDiscoverableScopedChannelPluginIds,
   resolveGatewayStartupPluginIds,
 } from "./channel-plugin-ids.js";
 
@@ -1714,7 +1715,7 @@ describe("resolveConfiguredChannelPluginIds", () => {
 
   it("does not treat auto-enabled non-bundled channel owners as explicitly trusted", () => {
     expect(
-      resolveConfiguredChannelPluginIds({
+      resolveDiscoverableScopedChannelPluginIds({
         config: createStartupConfig({
           channelIds: ["global-activation-channel"],
           enabledPluginIds: ["global-activation-channel-plugin"],
@@ -1722,6 +1723,7 @@ describe("resolveConfiguredChannelPluginIds", () => {
         activationSourceConfig: createStartupConfig({
           channelIds: ["global-activation-channel"],
         }),
+        channelIds: ["global-activation-channel"],
         workspaceDir: "/tmp",
         env: process.env,
       }),

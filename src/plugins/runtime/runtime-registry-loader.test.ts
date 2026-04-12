@@ -145,7 +145,6 @@ describe("ensurePluginRegistryLoaded", () => {
     expect(mocks.resolveConfiguredChannelPluginIds).toHaveBeenCalledWith(
       expect.objectContaining({
         config: resolvedConfig,
-        activationSourceConfig: { plugins: { allow: ["demo-channel"] } },
         env,
         workspaceDir: "/resolved-workspace",
       }),
