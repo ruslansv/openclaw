@@ -628,8 +628,8 @@ describe("Discord model picker interactions", () => {
 
     await button.run(submitInteraction as unknown as PickerButtonInteraction, submitData);
 
-    const mismatchLog = verboseSpy.mock.calls.find(
-      (call) => typeof call[0] === "string" && call[0].includes("model picker override mismatch"),
+    const mismatchLog = verboseSpy.mock.calls.find((call) =>
+      call[0]?.includes("model picker override mismatch"),
     )?.[0];
     expect(mismatchLog).toContain("session key agent:worker:subagent:bound");
   });
