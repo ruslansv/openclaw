@@ -984,4 +984,10 @@ describe("scripts/docker/setup.sh", () => {
       compose.match(/OPENCLAW_WORKSPACE_DIR: \/home\/node\/\.openclaw\/workspace$/gm),
     ).toHaveLength(2);
   });
+
+  it("keeps the gateway on image-default user and entrypoint", async () => {
+    const compose = await readFile(join(repoRoot, "docker-compose.yml"), "utf8");
+    expect(compose).not.toContain("user: root");
+    expect(compose).not.toContain('entrypoint: ["/app/scripts/docker/gateway-entrypoint.sh"]');
+  });
 });
