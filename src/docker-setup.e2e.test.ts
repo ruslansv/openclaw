@@ -361,13 +361,7 @@ describe("scripts/docker/setup.sh", () => {
       "run --rm --no-deps --user node --entrypoint node openclaw-gateway dist/index.js onboard --mode local --no-install-daemon",
     );
     expect(log).toContain(
-      "run --rm --no-deps --user node --entrypoint node openclaw-gateway dist/index.js config set gateway.mode local",
-    );
-    expect(log).toContain(
-      "run --rm --no-deps --user node --entrypoint node openclaw-gateway dist/index.js config set gateway.bind lan",
-    );
-    expect(log).toContain(
-      'run --rm --no-deps --user node --entrypoint node openclaw-gateway dist/index.js config set gateway.controlUi.allowedOrigins ["http://localhost:18789","http://127.0.0.1:18789"] --strict-json',
+      'run --rm --no-deps --user node --entrypoint node openclaw-gateway dist/index.js config set --batch-json [{"path":"gateway.mode","value":"local"},{"path":"gateway.bind","value":"lan"},{"path":"gateway.controlUi.allowedOrigins","value":["http://localhost:18789","http://127.0.0.1:18789"]}]',
     );
     expect(log).not.toContain("run --rm openclaw-cli onboard --mode local --no-install-daemon");
   });
@@ -913,5 +907,11 @@ describe("scripts/docker/setup.sh", () => {
     expect(
       compose.match(/OPENCLAW_WORKSPACE_DIR: \/home\/node\/\.openclaw\/workspace$/gm),
     ).toHaveLength(2);
+  });
+
+  it("keeps the gateway on image-default user and entrypoint", async () => {
+    const compose = await readFile(join(repoRoot, "docker-compose.yml"), "utf8");
+    expect(compose).not.toContain("user: root");
+    expect(compose).not.toContain('entrypoint: ["/app/scripts/docker/gateway-entrypoint.sh"]');
   });
 });

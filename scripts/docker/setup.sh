@@ -251,7 +251,7 @@ run_prestart_cli() {
   # requires the gateway container's network namespace to already exist. That
   # creates a circular dependency for config writes that are needed before the
   # gateway can start cleanly.
-  run_prestart_gateway --entrypoint node openclaw-gateway \
+  run_prestart_gateway --user node --entrypoint node openclaw-gateway \
     dist/index.js "$@"
 }
 
@@ -647,6 +647,9 @@ fi
 # Ensure bind-mounted data directories are writable by the container's `node`
 # user (uid 1000). Host-created dirs inherit the host user's uid which may
 # differ, causing EACCES when the container tries to mkdir/write.
+# Keep the long-running gateway on the image default `node` user so routine
+# `docker compose exec openclaw-gateway ...` flows do not leave root-owned
+# state behind; this one-shot root container is the ownership repair step.
 # Running a brief root container to chown is the portable Docker idiom --
 # it works regardless of the host uid and doesn't require host-side root.
 echo ""

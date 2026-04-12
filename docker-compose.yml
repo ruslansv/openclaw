@@ -2,6 +2,9 @@ services:
   openclaw-gateway:
     image: ${OPENCLAW_IMAGE:-openclaw:local}
     build: .
+    # Keep the runtime on the image default `node` user so `docker compose exec`
+    # against the running gateway does not create root-owned config/state files.
+    # Rely on the image's default entrypoint so pinned older tags still start.
     env_file:
       - path: .env
         required: false
