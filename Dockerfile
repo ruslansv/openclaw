@@ -179,6 +179,8 @@ RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,shar
       ca-certificates procps hostname curl git lsof openssl python3 tini && \
     update-ca-certificates
 RUN chown node:node /app
+# Keep these dirs writable in the baked image; docker-compose.yml also repairs
+# them at container start when OPENCLAW_HOME_VOLUME hides /home/node.
 RUN mkdir -p /home/node/.cache "${PNPM_HOME}" "${NPM_CONFIG_PREFIX}/bin" "${COREPACK_HOME}" \
     "${GOPATH}/bin" "${HOMEBREW_REPOSITORY}" "${HOMEBREW_CELLAR}" "${HOMEBREW_PREFIX}/bin" && \
     chown -R node:node /home/node/.cache /home/node/.local /home/node/.npm-global /home/node/go /home/linuxbrew "${COREPACK_HOME}"

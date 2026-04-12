@@ -230,6 +230,10 @@ export OPENCLAW_HOME_VOLUME="openclaw_home"
 ./scripts/docker/setup.sh
 ```
 
+OpenClaw bootstraps the writable tool dirs inside that volume on setup and on
+every `docker compose up`, so `pnpm`, `npm -g`, `go install`, and cache writes
+still work after the fresh `/home/node` mount hides the image-baked paths.
+
 ### Install extra apt packages (optional)
 
 `OPENCLAW_DOCKER_APT_PACKAGES` installs additional Debian packages at build time:
@@ -391,9 +395,11 @@ Installed downloadable plugins store their package state under the mounted
 OpenClaw home, so plugin install records and package roots survive container
 replacement. Gateway startup does not generate bundled-plugin dependency trees.
 
-The project-root Docker `.env` is passed into containers as environment
-variables via Compose. It is not mounted into the container filesystem as a raw
-file.
+Compose reads the project-root Docker `.env` for variable interpolation, but
+the containers only receive the allowlisted environment keys declared in
+`docker-compose.yml`. Put extra OpenClaw runtime env vars in
+`$OPENCLAW_CONFIG_DIR/.env`; that file lives inside the mounted config
+directory and is preserved across container replacement.
 
 For full persistence details on VM deployments, see
 [Docker VM Runtime - What persists where](/install/docker-vm-runtime#what-persists-where).
