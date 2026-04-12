@@ -665,6 +665,9 @@ describe("scripts/docker/setup.sh", () => {
     expect(chownIdx).toBeGreaterThanOrEqual(0);
     expect(onboardIdx).toBeGreaterThan(chownIdx);
     expect(log).toContain("run --rm --no-deps --user root --entrypoint sh openclaw-gateway -c");
+    expect(log).toContain("/home/node/.cache");
+    expect(log).toContain("/home/node/.npm-global");
+    expect(log).toContain("/home/node/go");
   });
 
   it("precreates auth profile secret key dir outside the mounted state dir", async () => {
@@ -940,7 +943,9 @@ describe("scripts/docker/setup.sh", () => {
   it("keeps docker-compose CLI network namespace settings in sync", async () => {
     const compose = await readFile(join(repoRoot, "docker-compose.yml"), "utf8");
     expect(compose).toContain('network_mode: "service:openclaw-gateway"');
-    expect(compose).toContain("depends_on:\n      - openclaw-gateway");
+    expect(compose).toContain(
+      "depends_on:\n      openclaw-gateway:\n        condition: service_started",
+    );
   });
 
   it("keeps docker-compose gateway token env defaults aligned across services", async () => {
@@ -959,9 +964,10 @@ describe("scripts/docker/setup.sh", () => {
     ).toHaveLength(3);
   });
 
-  it("keeps docker-compose optional env files aligned across services", async () => {
+  it("allowlists Docker runtime env keys instead of injecting the full project .env", async () => {
     const compose = await readFile(join(repoRoot, "docker-compose.yml"), "utf8");
-    expect(compose.match(/env_file:\n {6}- path: \.env\n {8}required: false/g)).toHaveLength(2);
+    expect(compose).not.toContain("env_file:");
+    expect(compose).not.toContain("/app/.env:ro");
   });
 
   it("keeps docker-compose timezone env defaults aligned across services", async () => {
@@ -985,9 +991,22 @@ describe("scripts/docker/setup.sh", () => {
     ).toHaveLength(2);
   });
 
-  it("keeps the gateway on image-default user and entrypoint", async () => {
+  it("bootstraps node-owned runtime dirs before starting the gateway", async () => {
     const compose = await readFile(join(repoRoot, "docker-compose.yml"), "utf8");
-    expect(compose).not.toContain("user: root");
+    expect(compose).toContain("openclaw-init:");
+    expect(compose).toContain("condition: service_completed_successfully");
+    expect(compose).toContain(
+      'mkdir -p /home/node/.cache /home/node/.npm "${PNPM_HOME:-/home/node/.local/share/pnpm}"',
+    );
+    expect(compose).toContain(
+      "chown -R node:node /home/node/.cache /home/node/.local /home/node/.npm",
+    );
+  });
+
+  it("keeps the gateway on the image-default user while the init service runs as root", async () => {
+    const compose = await readFile(join(repoRoot, "docker-compose.yml"), "utf8");
+    expect(compose).toMatch(/openclaw-init:[\s\S]*?\n\s+user: root/);
+    expect(compose).not.toMatch(/openclaw-gateway:[\s\S]*?\n\s+user: root/);
     expect(compose).not.toContain('entrypoint: ["/app/scripts/docker/gateway-entrypoint.sh"]');
   });
 });
