@@ -683,8 +683,9 @@ run_prestart_gateway --user root --entrypoint sh openclaw-gateway -c \
       "${GOPATH:-/home/node/go}/bin"; \
    chown -R node:node /home/node/.cache /home/node/.local /home/node/.npm \
       /home/node/.npm-global /home/node/go; \
-   find /home/node/.openclaw -xdev -exec chown node:node {} +; \
-   [ -d /home/node/.openclaw/workspace/.openclaw ] && chown -R node:node /home/node/.openclaw/workspace/.openclaw || true'
+   find /home/node/.openclaw -xdev -exec chown -h node:node {} +; \
+   [ -d /home/node/.openclaw/workspace/.openclaw ] && \
+      find /home/node/.openclaw/workspace/.openclaw -xdev -exec chown -h node:node {} + || true'
 
 echo ""
 if [[ -n "$SKIP_ONBOARDING" ]]; then
