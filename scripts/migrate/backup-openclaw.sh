@@ -177,8 +177,11 @@ for root, dirs, files in os.walk(stage):
     dirs.sort()
     files.sort()
     for name in files:
-        rel = os.path.relpath(os.path.join(root, name), stage)
+        path = os.path.join(root, name)
+        rel = os.path.relpath(path, stage)
         if rel == "SHA256SUMS":
+            continue
+        if os.path.islink(path):
             continue
         entries.append(rel)
 
