@@ -673,6 +673,7 @@ describe("scripts/docker/setup.sh", () => {
     expect(log).toContain("/home/node/.cache");
     expect(log).toContain("/home/node/.npm-global");
     expect(log).toContain("/home/node/go");
+    expect(log).toContain("find /home/node/.openclaw -xdev -exec chown -h node:node {} +");
   });
 
   it("precreates auth profile secret key dir outside the mounted state dir", async () => {
@@ -1006,6 +1007,10 @@ describe("scripts/docker/setup.sh", () => {
     );
     expect(compose).toContain(
       "chown -R node:node /home/node/.cache /home/node/.local /home/node/.npm",
+    );
+    expect(compose).toContain("find /home/node/.openclaw -xdev -exec chown -h node:node {} +");
+    expect(compose).toContain(
+      "find /home/node/.openclaw/workspace/.openclaw -xdev -exec chown -h node:node {} +",
     );
   });
 
