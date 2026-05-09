@@ -217,6 +217,7 @@ RUN install -d -m 0755 "$COREPACK_HOME" && \
 # Docker workflows. Smoke workflows can opt out of distro upgrades to cut
 # repeated CI time, and extra packages can still be layered in without
 # reinstalling duplicates.
+ARG OPENCLAW_DOCKER_APT_UPGRADE=1
 ARG OPENCLAW_DOCKER_APT_PACKAGES=""
 RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,id=openclaw-bookworm-apt-lists,target=/var/lib/apt,sharing=locked \

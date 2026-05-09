@@ -89,6 +89,18 @@ describe("Dockerfile", () => {
     expect(dockerfile).toContain("apt-get install -y --no-install-recommends ${BASE_APT_PACKAGES}");
   });
 
+  it("defaults the runtime apt upgrade flag before the strict shell install layer", async () => {
+    const dockerfile = await readFile(dockerfilePath, "utf8");
+    const upgradeArgIndex = dockerfile.indexOf("ARG OPENCLAW_DOCKER_APT_UPGRADE=1");
+    const aptPackagesArgIndex = dockerfile.indexOf('ARG OPENCLAW_DOCKER_APT_PACKAGES=""');
+    const strictInstallIndex = dockerfile.indexOf("set -eux; \\\n    apt-get update;");
+
+    expect(upgradeArgIndex).toBeGreaterThan(-1);
+    expect(aptPackagesArgIndex).toBeGreaterThan(upgradeArgIndex);
+    expect(strictInstallIndex).toBeGreaterThan(aptPackagesArgIndex);
+    expect(dockerfile).toContain('if [ "${OPENCLAW_DOCKER_APT_UPGRADE}" != "0" ]; then');
+  });
+
   it("verifies matrix-sdk-crypto native addons without hardcoded pnpm virtual-store paths", async () => {
     const dockerfile = await readFile(dockerfilePath, "utf8");
     expect(dockerfile).toContain("Verifying critical native addons");
