@@ -2,10 +2,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   loadChannelOutboundAdapter: vi.fn(),
+  bootstrapOutboundChannelPlugin: vi.fn(),
 }));
 
 vi.mock("../../channels/plugins/outbound/load.js", () => ({
   loadChannelOutboundAdapter: mocks.loadChannelOutboundAdapter,
+}));
+
+vi.mock("../../infra/outbound/channel-bootstrap.runtime.js", () => ({
+  bootstrapOutboundChannelPlugin: mocks.bootstrapOutboundChannelPlugin,
 }));
 
 describe("createChannelOutboundRuntimeSend", () => {
@@ -82,6 +87,37 @@ describe("createChannelOutboundRuntimeSend", () => {
         to: "+15551234567",
         text: "hello",
         accountId: "default",
+      }),
+    );
+  });
+
+  it("bootstraps a missing outbound adapter before reporting it unavailable", async () => {
+    const cfg = { channels: { slack: { enabled: true } } };
+    const sendText = vi.fn(async () => ({ channel: "slack", messageId: "slack-bootstrapped" }));
+    mocks.loadChannelOutboundAdapter
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({ sendText });
+
+    const { createChannelOutboundRuntimeSend } = await import("./channel-outbound-send.js");
+    const runtimeSend = createChannelOutboundRuntimeSend({
+      channelId: "slack" as never,
+      unavailableMessage: "unavailable",
+    });
+
+    await runtimeSend.sendMessage("user:U123", "hello", {
+      cfg,
+    });
+
+    expect(mocks.bootstrapOutboundChannelPlugin).toHaveBeenCalledWith({
+      channel: "slack",
+      cfg,
+    });
+    expect(mocks.loadChannelOutboundAdapter).toHaveBeenCalledTimes(2);
+    expect(sendText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cfg,
+        to: "user:U123",
+        text: "hello",
       }),
     );
   });

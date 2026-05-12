@@ -32,17 +32,47 @@ function resolveRuntimeReplyToId(opts: RuntimeSendOpts): string | undefined {
   return raw == null ? undefined : normalizeOptionalString(String(raw));
 }
 
+let channelBootstrapRuntimePromise:
+  | Promise<typeof import("../../infra/outbound/channel-bootstrap.runtime.js")>
+  | undefined;
+
+async function loadChannelBootstrapRuntime() {
+  channelBootstrapRuntimePromise ??= import("../../infra/outbound/channel-bootstrap.runtime.js");
+  return await channelBootstrapRuntimePromise;
+}
+
+async function loadBootstrappedOutboundAdapter(params: {
+  channelId: ChannelId;
+  resolveConfig: () => OpenClawConfig;
+}) {
+  let outbound = await loadChannelOutboundAdapter(params.channelId);
+  if (!outbound) {
+    const { bootstrapOutboundChannelPlugin } = await loadChannelBootstrapRuntime();
+    bootstrapOutboundChannelPlugin({
+      channel: params.channelId as never,
+      cfg: params.resolveConfig(),
+    });
+    outbound = await loadChannelOutboundAdapter(params.channelId);
+  }
+  return outbound;
+}
+
 export function createChannelOutboundRuntimeSend(params: {
   channelId: ChannelId;
   unavailableMessage: string;
 }) {
   return {
     sendMessage: async (to: string, text: string, opts: RuntimeSendOpts = {}) => {
-      const outbound = await loadChannelOutboundAdapter(params.channelId);
+      let resolvedConfig = opts.cfg;
+      const resolveConfig = () => (resolvedConfig ??= getRuntimeConfig());
+      const outbound = await loadBootstrappedOutboundAdapter({
+        channelId: params.channelId,
+        resolveConfig,
+      });
       const threadId = resolveRuntimeThreadId(opts);
       const replyToId = resolveRuntimeReplyToId(opts);
       const buildContext = () => ({
-        cfg: opts.cfg ?? getRuntimeConfig(),
+        cfg: resolveConfig(),
         to,
         text,
         mediaUrl: opts.mediaUrl,
