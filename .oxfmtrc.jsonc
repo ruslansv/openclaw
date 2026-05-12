@@ -10,8 +10,10 @@
   "useTabs": false,
   "ignorePatterns": [
     "apps/",
+    "backups/",
     "CLAUDE.md",
     "docker-compose.yml",
+    "extensions/diffs/assets/viewer-runtime.js",
     "dist/",
     "docs/_layouts/",
     "**/*.json",

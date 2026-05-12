@@ -8,7 +8,6 @@ import { parseOcPath } from "../oc-path.js";
 import { parseMd } from "../parse.js";
 import { detectInsertion, resolveOcPath, setOcPath } from "../universal.js";
 
-
 describe("detectInsertion", () => {
   it("returns null for plain paths", () => {
     expect(detectInsertion(parseOcPath("oc://X.md/section/item/field"))).toBeNull();
@@ -37,7 +36,6 @@ describe("detectInsertion", () => {
     expect(info?.parentPath.section).toBeUndefined();
   });
 });
-
 
 describe("resolveOcPath — md AST", () => {
   const md = parseMd("---\nname: github\n---\n\n## Boundaries\n\n- enabled: true\n").ast;
@@ -164,7 +162,6 @@ describe("resolveOcPath — insertion-point detection", () => {
   });
 });
 
-
 describe("setOcPath — md leaf", () => {
   it("replaces frontmatter value", () => {
     const md = parseMd("---\nname: old\n---\n").ast;
@@ -275,7 +272,6 @@ describe("setOcPath — jsonl leaf", () => {
     }
   });
 });
-
 
 describe("setOcPath — md insertion", () => {
   it("appends item to section with `+`", () => {
@@ -420,7 +416,6 @@ describe("setOcPath — jsonl insertion (session append)", () => {
     expect(r.ok).toBe(false);
   });
 });
-
 
 describe("setOcPath — cross-cutting properties", () => {
   it("is non-mutating across all kinds", () => {

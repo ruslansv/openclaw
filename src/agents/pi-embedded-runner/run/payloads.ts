@@ -24,10 +24,7 @@ import {
   normalizeTextForComparison,
 } from "../../pi-embedded-helpers.js";
 import type { ToolResultFormat } from "../../pi-embedded-subscribe.shared-types.js";
-import {
-  extractAssistantThinking,
-  extractAssistantVisibleText,
-} from "../../pi-embedded-utils.js";
+import { extractAssistantThinking, extractAssistantVisibleText } from "../../pi-embedded-utils.js";
 import { isExecLikeToolName, type ToolErrorSummary } from "../../tool-error-summary.js";
 import { isLikelyMutatingToolName } from "../../tool-mutation.js";
 
