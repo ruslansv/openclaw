@@ -96,11 +96,29 @@ jobs:
           echo "Plugin ClawHub publishes must target a commit reachable from main or release/*." >&2
           exit 1
 
+      - name: Resolve push diff range
+        id: push_range
+        env:
+          BEFORE_REF: ${{ github.event_name != 'workflow_dispatch' && github.event.before || '' }}
+          HEAD_REF: ${{ steps.ref.outputs.sha }}
+        run: |
+          set -euo pipefail
+          base_ref="${BEFORE_REF}"
+          if [[ -z "${base_ref}" || "${base_ref}" =~ ^0+$ ]]; then
+            base_ref="${HEAD_REF}"
+          elif ! git rev-parse --verify --quiet "${base_ref}^{commit}" >/dev/null; then
+            if ! git fetch --no-tags --depth=1 origin "${base_ref}" >/dev/null 2>&1; then
+              echo "::notice::Push before SHA ${base_ref} is not fetchable; plugin release preview will use an empty push range."
+              base_ref="${HEAD_REF}"
+            fi
+          fi
+          echo "base_ref=${base_ref}" >> "$GITHUB_OUTPUT"
+
       - name: Validate publishable plugin metadata
         env:
           PUBLISH_SCOPE: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_scope || '' }}
           RELEASE_PLUGINS: ${{ github.event_name == 'workflow_dispatch' && inputs.plugins || '' }}
-          BASE_REF: ${{ github.event_name != 'workflow_dispatch' && github.event.before || '' }}
+          BASE_REF: ${{ github.event_name != 'workflow_dispatch' && steps.push_range.outputs.base_ref || '' }}
           HEAD_REF: ${{ steps.ref.outputs.sha }}
         run: |
           set -euo pipefail
@@ -121,7 +139,7 @@ jobs:
         env:
           PUBLISH_SCOPE: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_scope || '' }}
           RELEASE_PLUGINS: ${{ github.event_name == 'workflow_dispatch' && inputs.plugins || '' }}
-          BASE_REF: ${{ github.event_name != 'workflow_dispatch' && github.event.before || '' }}
+          BASE_REF: ${{ github.event_name != 'workflow_dispatch' && steps.push_range.outputs.base_ref || '' }}
           HEAD_REF: ${{ steps.ref.outputs.sha }}
           CLAWHUB_REGISTRY: ${{ env.CLAWHUB_REGISTRY }}
         run: |

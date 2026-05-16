@@ -30,11 +30,13 @@ Docs: https://docs.openclaw.ai
 - Telegram: let authorized text `/stop` commands use the fast-abort path before queued agent work, so active turns stop immediately instead of processing the abort after the turn finishes; foreign-bot `/stop@otherbot` mentions now stay on the regular topic lane instead of being routed into our control lane. Fixes #82162. Thanks @civiltox.
 - Sessions: drop persisted entries with invalid session ids and strip malformed transcript file metadata before hydrating session runtime state.
 - Sessions/WhatsApp: preserve scoped group activation-only backfill entries while still rejecting malformed session ids.
+- Sessions/compaction: preserve the active session entry when `/compact` writes compaction metadata, keeping compaction counts visible after strict store normalization.
 - Auth/device: normalize malformed persisted device-auth token metadata before returning or preserving token entries.
 - Pairing: skip malformed persisted pending pairing requests before approving valid channel pairing codes.
 - Commitments: strip malformed optional reminder scope metadata from persisted commitments before matching pending follow-ups.
 - Config persistence: normalize malformed auth profile credential fields/state, skip JSON-valid garbage transcript checkpoint rows, and let `openclaw doctor --fix` remove unrepairable cron job rows.
 - Cron: skip persisted job rows with malformed schedule or payload shapes in memory, leaving the store for `openclaw doctor --fix` instead of hydrating them into runtime state.
+- Cron: keep blank main-session payload rows hydrated so scheduled runs record a skipped status instead of silently dropping the job as malformed.
 - Task persistence: drop malformed array/scalar requester-origin JSON from task and task-flow SQLite sidecars instead of restoring it as delivery metadata.
 - Agents/timeouts: clarify model idle-timeout errors and docs so provider `timeoutSeconds` is shown as bounded by the whole agent/run timeout ceiling.
 - Release tooling: align the published launcher Node floor, `npm start`, package script checks, sharded lint locking, Vitest root project coverage, and plugin-SDK declaration build cache metadata so release/package validation does not silently skip or ship stale surfaces.
