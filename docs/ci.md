@@ -384,7 +384,7 @@ pnpm test:docker:rerun <run-id>      # download Docker artifacts and print combi
 pnpm test:docker:timings <summary>   # slow-lane and phase critical-path summaries
 ```
 
-The scheduled live/E2E workflow runs the full release-path Docker suite daily.
+The scheduled live/E2E workflow runs the full release-path Docker suite daily in the canonical repository. Forks keep manual dispatch available but skip the automatic schedule to avoid surprise live-provider and Docker release-path runs.
 
 ## Plugin Prerelease
 
