@@ -24,9 +24,36 @@ function normalizeOptionalTimestamp(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
 }
 
-export function normalizePersistedSessionEntryShape(value: unknown): SessionEntry | undefined {
-  if (!isRecord(value) || !isSafeSessionId(value.sessionId)) {
+function normalizeGroupActivation(value: unknown): SessionEntry["groupActivation"] | undefined {
+  return value === "mention" || value === "always" ? value : undefined;
+}
+
+function normalizeActivationOnlyEntry(value: Record<string, unknown>): SessionEntry | undefined {
+  const groupActivation = normalizeGroupActivation(value.groupActivation);
+  if (!groupActivation) {
     return undefined;
+  }
+  return {
+    groupActivation,
+    ...(typeof value.groupActivationNeedsSystemIntro === "boolean"
+      ? { groupActivationNeedsSystemIntro: value.groupActivationNeedsSystemIntro }
+      : {}),
+  } as SessionEntry;
+}
+
+export function normalizePersistedSessionEntryShape(value: unknown): SessionEntry | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  if (!isSafeSessionId(value.sessionId)) {
+    if (value.sessionId !== undefined) {
+      return undefined;
+    }
+    // WhatsApp group activation backfills can intentionally create a scoped
+    // entry before any conversation session exists. Keep only that narrow
+    // metadata shape; all other partial entries stay invalid.
+    return normalizeActivationOnlyEntry(value);
   }
 
   let next = value as unknown as SessionEntry;

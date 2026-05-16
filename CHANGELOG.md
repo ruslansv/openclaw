@@ -29,6 +29,7 @@ Docs: https://docs.openclaw.ai
 - Agents/subagents: warn and continue completion announce cleanup when lifecycle cleanup fails, preventing ended subagent runs from becoming silent ghosts. Fixes #82306. Thanks @SebTardif.
 - Telegram: let authorized text `/stop` commands use the fast-abort path before queued agent work, so active turns stop immediately instead of processing the abort after the turn finishes; foreign-bot `/stop@otherbot` mentions now stay on the regular topic lane instead of being routed into our control lane. Fixes #82162. Thanks @civiltox.
 - Sessions: drop persisted entries with invalid session ids and strip malformed transcript file metadata before hydrating session runtime state.
+- Sessions/WhatsApp: preserve scoped group activation-only backfill entries while still rejecting malformed session ids.
 - Auth/device: normalize malformed persisted device-auth token metadata before returning or preserving token entries.
 - Pairing: skip malformed persisted pending pairing requests before approving valid channel pairing codes.
 - Commitments: strip malformed optional reminder scope metadata from persisted commitments before matching pending follow-ups.

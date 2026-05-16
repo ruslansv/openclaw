@@ -473,6 +473,32 @@ describe("session store writer queue", () => {
     expect(store["agent:main:unsafe-id"]).toBeUndefined();
   });
 
+  it("preserves activation-only group session entries on load", async () => {
+    const { storePath } = await makeTmpStore({
+      "agent:main:whatsapp:group:123@g.us:thread:whatsapp-account-work": {
+        groupActivation: "always",
+        groupActivationNeedsSystemIntro: true,
+        updatedAt: "ignored-until-session-exists",
+      },
+      "agent:main:invalid-activation": {
+        groupActivation: "loud",
+      },
+      "agent:main:invalid-id-with-activation": {
+        sessionId: "../etc/passwd",
+        groupActivation: "always",
+      },
+    } as unknown as Record<string, SessionEntry>);
+
+    const store = loadSessionStore(storePath, { skipCache: true });
+
+    expect(store["agent:main:whatsapp:group:123@g.us:thread:whatsapp-account-work"]).toStrictEqual({
+      groupActivation: "always",
+      groupActivationNeedsSystemIntro: true,
+    });
+    expect(store["agent:main:invalid-activation"]).toBeUndefined();
+    expect(store["agent:main:invalid-id-with-activation"]).toBeUndefined();
+  });
+
   it("skips session store disk writes when payload is unchanged", async () => {
     const key = "agent:main:no-op-save";
     const { storePath } = await makeTmpStore({

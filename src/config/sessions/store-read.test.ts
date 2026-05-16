@@ -64,4 +64,33 @@ describe("readSessionStoreReadOnly", () => {
       expect(store.traversal).toBeUndefined();
     });
   });
+
+  it("keeps activation-only group entries in read-only snapshots", async () => {
+    await withTempDir({ prefix: "openclaw-session-store-readonly-activation-" }, async (dir) => {
+      const storePath = path.join(dir, "sessions.json");
+
+      await fs.writeFile(
+        storePath,
+        JSON.stringify({
+          group: {
+            groupActivation: "mention",
+            groupActivationNeedsSystemIntro: false,
+            updatedAt: "ignored-until-session-exists",
+          },
+          invalidActivation: { groupActivation: "loud" },
+          invalidSession: { sessionId: "../etc/passwd", groupActivation: "always" },
+        }),
+        "utf8",
+      );
+
+      const store = readSessionStoreReadOnly(storePath);
+
+      expect(store.group).toStrictEqual({
+        groupActivation: "mention",
+        groupActivationNeedsSystemIntro: false,
+      });
+      expect(store.invalidActivation).toBeUndefined();
+      expect(store.invalidSession).toBeUndefined();
+    });
+  });
 });
