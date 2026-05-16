@@ -506,19 +506,19 @@ describe("scripts/docker/setup.sh", () => {
     const log = await readDockerLog(activeSandbox);
     expect(log).toContain("--build-arg OPENCLAW_INSTALL_BROWSER=1");
     expect(log).toContain(
-      "run --rm --no-deps --user node --entrypoint node openclaw-gateway dist/index.js config set browser.enabled true",
+      `run --rm --no-deps ${prestartContainerEnvFlags} --entrypoint node openclaw-gateway dist/index.js config set browser.enabled true`,
     );
     expect(log).toContain(
-      "run --rm --no-deps --user node --entrypoint node openclaw-gateway dist/index.js config set browser.defaultProfile openclaw",
+      `run --rm --no-deps ${prestartContainerEnvFlags} --entrypoint node openclaw-gateway dist/index.js config set browser.defaultProfile openclaw`,
     );
     expect(log).toContain(
-      "run --rm --no-deps --user node --entrypoint node openclaw-gateway dist/index.js config set browser.headless true",
+      `run --rm --no-deps ${prestartContainerEnvFlags} --entrypoint node openclaw-gateway dist/index.js config set browser.headless true`,
     );
     expect(log).toContain(
-      "run --rm --no-deps --user node --entrypoint node openclaw-gateway dist/index.js config set browser.noSandbox true",
+      `run --rm --no-deps ${prestartContainerEnvFlags} --entrypoint node openclaw-gateway dist/index.js config set browser.noSandbox true`,
     );
     expect(log).toContain(
-      "run --rm --no-deps --user node --entrypoint node openclaw-gateway dist/index.js config set browser.executablePath /usr/local/bin/openclaw-playwright-chromium",
+      `run --rm --no-deps ${prestartContainerEnvFlags} --entrypoint node openclaw-gateway dist/index.js config set browser.executablePath /usr/local/bin/openclaw-playwright-chromium`,
     );
   });
 
@@ -550,10 +550,10 @@ describe("scripts/docker/setup.sh", () => {
     expect(result.status).toBe(0);
     const log = await readDockerLog(activeSandbox);
     expect(log).toContain(
-      "run --rm --no-deps --user node --entrypoint node openclaw-gateway dist/index.js config get browser.enabled",
+      `run --rm --no-deps ${prestartContainerEnvFlags} --entrypoint node openclaw-gateway dist/index.js config get browser.enabled`,
     );
     expect(log).toContain(
-      "run --rm --no-deps --user node --entrypoint node openclaw-gateway dist/index.js config get browser.executablePath",
+      `run --rm --no-deps ${prestartContainerEnvFlags} --entrypoint node openclaw-gateway dist/index.js config get browser.executablePath`,
     );
     expect(log).not.toContain("config set browser.enabled true");
     expect(log).not.toContain("config set browser.headless true");
@@ -620,10 +620,10 @@ describe("scripts/docker/setup.sh", () => {
     expect(result.status).toBe(0);
     const log = await readDockerLog(activeSandbox);
     expect(log).toContain(
-      "run --rm --no-deps --user node --entrypoint node openclaw-gateway dist/index.js config set tools.exec.security full",
+      `run --rm --no-deps ${prestartContainerEnvFlags} --entrypoint node openclaw-gateway dist/index.js config set tools.exec.security full`,
     );
     expect(log).toContain(
-      "run --rm --no-deps --user node --entrypoint node openclaw-gateway dist/index.js config set tools.exec.ask off",
+      `run --rm --no-deps ${prestartContainerEnvFlags} --entrypoint node openclaw-gateway dist/index.js config set tools.exec.ask off`,
     );
     expect(log).toContain("run --rm --no-deps --user node --entrypoint node openclaw-gateway -e");
 
