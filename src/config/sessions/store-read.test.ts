@@ -77,6 +77,11 @@ describe("readSessionStoreReadOnly", () => {
             groupActivationNeedsSystemIntro: false,
             updatedAt: "ignored-until-session-exists",
           },
+          dashboard: {
+            label: " Dashboard Chat ",
+            updatedAt: 2,
+            sessionFile: "stale.jsonl",
+          },
           invalidActivation: { groupActivation: "loud" },
           invalidSession: { sessionId: "../etc/passwd", groupActivation: "always" },
         }),
@@ -88,6 +93,10 @@ describe("readSessionStoreReadOnly", () => {
       expect(store.group).toStrictEqual({
         groupActivation: "mention",
         groupActivationNeedsSystemIntro: false,
+      });
+      expect(store.dashboard).toStrictEqual({
+        label: "Dashboard Chat",
+        updatedAt: 2,
       });
       expect(store.invalidActivation).toBeUndefined();
       expect(store.invalidSession).toBeUndefined();

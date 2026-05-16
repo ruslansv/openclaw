@@ -487,6 +487,11 @@ describe("session store writer queue", () => {
         sessionId: "../etc/passwd",
         groupActivation: "always",
       },
+      "agent:main:dead-dashboard-entry": {
+        label: " Ops Main ",
+        updatedAt: 1,
+        sessionFile: "stale.jsonl",
+      },
     } as unknown as Record<string, SessionEntry>);
 
     const store = loadSessionStore(storePath, { skipCache: true });
@@ -497,6 +502,10 @@ describe("session store writer queue", () => {
     });
     expect(store["agent:main:invalid-activation"]).toBeUndefined();
     expect(store["agent:main:invalid-id-with-activation"]).toBeUndefined();
+    expect(store["agent:main:dead-dashboard-entry"]).toStrictEqual({
+      label: "Ops Main",
+      updatedAt: 1,
+    });
   });
 
   it("skips session store disk writes when payload is unchanged", async () => {

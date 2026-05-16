@@ -1,3 +1,4 @@
+import { parseSessionLabel } from "../../sessions/session-label.js";
 import { validateSessionId } from "./paths.js";
 import type { SessionEntry } from "./types.js";
 
@@ -28,17 +29,31 @@ function normalizeGroupActivation(value: unknown): SessionEntry["groupActivation
   return value === "mention" || value === "always" ? value : undefined;
 }
 
-function normalizeActivationOnlyEntry(value: Record<string, unknown>): SessionEntry | undefined {
-  const groupActivation = normalizeGroupActivation(value.groupActivation);
-  if (!groupActivation) {
-    return undefined;
+function normalizeMetadataOnlyEntry(value: Record<string, unknown>): SessionEntry | undefined {
+  const next: Partial<SessionEntry> = {};
+
+  const label = parseSessionLabel(value.label);
+  if (label.ok) {
+    next.label = label.label;
   }
-  return {
-    groupActivation,
-    ...(typeof value.groupActivationNeedsSystemIntro === "boolean"
-      ? { groupActivationNeedsSystemIntro: value.groupActivationNeedsSystemIntro }
-      : {}),
-  } as SessionEntry;
+
+  if (
+    typeof value.updatedAt === "number" &&
+    Number.isFinite(value.updatedAt) &&
+    value.updatedAt >= 0
+  ) {
+    next.updatedAt = value.updatedAt;
+  }
+
+  const groupActivation = normalizeGroupActivation(value.groupActivation);
+  if (groupActivation) {
+    next.groupActivation = groupActivation;
+    if (typeof value.groupActivationNeedsSystemIntro === "boolean") {
+      next.groupActivationNeedsSystemIntro = value.groupActivationNeedsSystemIntro;
+    }
+  }
+
+  return Object.keys(next).length > 0 ? (next as SessionEntry) : undefined;
 }
 
 export function normalizePersistedSessionEntryShape(value: unknown): SessionEntry | undefined {
@@ -51,9 +66,10 @@ export function normalizePersistedSessionEntryShape(value: unknown): SessionEntr
       return undefined;
     }
     // WhatsApp group activation backfills can intentionally create a scoped
-    // entry before any conversation session exists. Keep only that narrow
-    // metadata shape; all other partial entries stay invalid.
-    return normalizeActivationOnlyEntry(value);
+    // entry before any conversation session exists. Dashboard session creation
+    // can also replace old "dead" entries while keeping safe labels. Keep only
+    // this narrow metadata shape; all other partial entries stay invalid.
+    return normalizeMetadataOnlyEntry(value);
   }
 
   let next = value as unknown as SessionEntry;
