@@ -20,6 +20,7 @@ env:
 
 jobs:
   live_and_openwebui_checks:
+    if: github.repository == 'openclaw/openclaw' || github.event_name == 'workflow_dispatch'
     permissions:
       actions: read
       contents: read
