@@ -1,3 +1,4 @@
+import { parseSessionLabel } from "../../sessions/session-label.js";
 import { isRecord } from "../../shared/record-coerce.js";
 import { validateSessionId } from "./paths.js";
 import type { SessionEntry } from "./types.js";
@@ -31,25 +32,64 @@ function normalizeOptionalTimestamp(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
 }
 
+function normalizeGroupActivation(value: unknown): SessionEntry["groupActivation"] | undefined {
+  return value === "mention" || value === "always" ? value : undefined;
+}
+
+function normalizeMetadataOnlyEntry(value: Record<string, unknown>): SessionEntry | undefined {
+  const next: Partial<SessionEntry> = {};
+
+  const label = parseSessionLabel(value.label);
+  if (label.ok) {
+    next.label = label.label;
+  }
+
+  if (
+    typeof value.updatedAt === "number" &&
+    Number.isFinite(value.updatedAt) &&
+    value.updatedAt >= 0
+  ) {
+    next.updatedAt = value.updatedAt;
+  }
+
+  const groupActivation = normalizeGroupActivation(value.groupActivation);
+  if (groupActivation) {
+    next.groupActivation = groupActivation;
+    if (typeof value.groupActivationNeedsSystemIntro === "boolean") {
+      next.groupActivationNeedsSystemIntro = value.groupActivationNeedsSystemIntro;
+    }
+  }
+
+  return Object.keys(next).length > 0 ? (next as SessionEntry) : undefined;
+}
+
 export function normalizePersistedSessionEntryShape(value: unknown): SessionEntry | undefined {
   if (!isRecord(value)) {
     return undefined;
   }
 
+  if (value.sessionId === undefined) {
+    // Some routing/session metadata is intentionally created before a
+    // transcript id exists. Keep only the narrow safe metadata subset.
+    return normalizeMetadataOnlyEntry(value);
+  }
+
+  if (!isSafeSessionId(value.sessionId)) {
+    return undefined;
+  }
+
   let next = value as unknown as SessionEntry;
   const sessionFile = typeof value.sessionFile === "string" ? value.sessionFile.trim() : undefined;
-  if (value.sessionId !== undefined) {
-    if (!isSafeSessionId(value.sessionId)) {
+  const sessionId = value.sessionId.trim();
+  const transcriptSessionId = normalizeTranscriptSessionId(sessionId);
+  if (!transcriptSessionId && !sessionFile) {
+    const metadata = normalizeMetadataOnlyEntry({ ...value, sessionId: undefined });
+    if (!metadata) {
       return undefined;
     }
-    const sessionId = value.sessionId.trim();
-    const transcriptSessionId = normalizeTranscriptSessionId(sessionId);
-    if (!transcriptSessionId && !sessionFile) {
-      const { sessionId: _dropSessionId, ...rest } = next;
-      next = rest as SessionEntry;
-    } else if (sessionId !== value.sessionId) {
-      next = { ...next, sessionId };
-    }
+    next = metadata;
+  } else if (sessionId !== value.sessionId) {
+    next = { ...next, sessionId };
   }
 
   if (value.sessionFile !== undefined && typeof value.sessionFile !== "string") {

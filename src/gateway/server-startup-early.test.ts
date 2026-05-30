@@ -42,6 +42,8 @@ vi.mock("../tasks/task-registry.maintenance.js", () => ({
 import { createChatRunState } from "./server-chat-state.js";
 import { startGatewayEarlyRuntime, startGatewayPluginDiscovery } from "./server-startup-early.js";
 
+type StartGatewayEarlyRuntimeParams = Parameters<typeof startGatewayEarlyRuntime>[0];
+
 describe("startGatewayEarlyRuntime", () => {
   beforeEach(() => {
     mocks.getMachineDisplayName.mockClear();
@@ -69,20 +71,20 @@ describe("startGatewayEarlyRuntime", () => {
       gatewayDirectReachable: false,
       tailscaleMode: "off" as never,
       log: {
-        info: () => {},
-        warn: () => {},
+        info: (_msg: string) => {},
+        warn: (_msg: string) => {},
       },
       logDiscovery: {
-        info: () => {},
-        warn: () => {},
+        info: (_msg: string) => {},
+        warn: (_msg: string) => {},
       },
       nodeRegistry: {} as never,
-      broadcast: () => {},
-      nodeSendToAllSubscribed: () => {},
+      broadcast: (_event: string, _payload: unknown) => {},
+      nodeSendToAllSubscribed: (_event: string, _payload: unknown) => {},
       getPresenceVersion: () => 0,
       getHealthVersion: () => 0,
-      refreshGatewayHealthSnapshot: async () => ({}) as never,
-      logHealth: { error: () => {} },
+      refreshGatewayHealthSnapshot: async (_opts?: { probe?: boolean }) => ({}) as never,
+      logHealth: { error: (_msg: string) => {} },
       dedupe: new Map(),
       chatAbortControllers: new Map(),
       chatRunState,
@@ -90,13 +92,13 @@ describe("startGatewayEarlyRuntime", () => {
       chatDeltaSentAt: chatRunState.deltaSentAt,
       chatDeltaLastBroadcastLen: chatRunState.deltaLastBroadcastLen,
       removeChatRun: () => undefined,
-      agentRunSeq: new Map(),
-      nodeSendToSession: () => {},
+      agentRunSeq: new Map<string, number>(),
+      nodeSendToSession: (_sessionKey: string, _event: string, _payload: unknown) => {},
       skillsRefreshDelayMs: 30_000,
       getSkillsRefreshTimer: () => null,
-      setSkillsRefreshTimer: () => {},
+      setSkillsRefreshTimer: (_timer) => {},
       getRuntimeConfig: () => ({}) as never,
-    });
+    } satisfies StartGatewayEarlyRuntimeParams);
 
     expect(earlyRuntime).not.toHaveProperty("mcpServer");
   });

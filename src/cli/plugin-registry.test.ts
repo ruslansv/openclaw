@@ -98,6 +98,11 @@ const mocks = vi.hoisted(() => ({
     vi.fn<typeof import("../plugins/runtime/load-context.js").resolvePluginRuntimeLoadContext>(),
 }));
 
+type LoadContextModule = typeof import("../plugins/runtime/load-context.js");
+type MockBuildPluginRuntimeLoadOptions = LoadContextModule["buildPluginRuntimeLoadOptions"];
+type MockBuildPluginRuntimeLoadOptionsFromValues =
+  LoadContextModule["buildPluginRuntimeLoadOptionsFromValues"];
+
 let ensurePluginRegistryLoaded: typeof import("./plugin-registry.js").ensurePluginRegistryLoaded;
 let resetPluginRegistryLoadedForTests: typeof import("./plugin-registry.js").testing.resetPluginRegistryLoadedForTests;
 
@@ -136,17 +141,25 @@ vi.mock("../plugins/runtime/load-context.js", () => ({
   resolvePluginRuntimeLoadContext: (
     ...args: Parameters<typeof mocks.resolvePluginRuntimeLoadContext>
   ) => mocks.resolvePluginRuntimeLoadContext(...args),
+  buildPluginRuntimeLoadOptions: (
+    context: Parameters<MockBuildPluginRuntimeLoadOptions>[0],
+    overrides?: Parameters<MockBuildPluginRuntimeLoadOptions>[1],
+  ) =>
+    buildPluginRuntimeLoadOptionsFixture(context, overrides as Record<string, unknown> | undefined),
   buildPluginRuntimeLoadOptionsFromValues: (
-    values: {
-      config: unknown;
-      activationSourceConfig: unknown;
-      autoEnabledReasons: Readonly<Record<string, string[]>>;
-      workspaceDir: string | undefined;
-      env: NodeJS.ProcessEnv;
-      logger: typeof logger;
-    },
-    overrides?: Record<string, unknown>,
-  ) => ({
+    values: Parameters<MockBuildPluginRuntimeLoadOptionsFromValues>[0],
+    overrides?: Parameters<MockBuildPluginRuntimeLoadOptionsFromValues>[1],
+  ) =>
+    buildPluginRuntimeLoadOptionsFixture(values, overrides as Record<string, unknown> | undefined),
+}));
+
+function buildPluginRuntimeLoadOptionsFixture(
+  values:
+    | Parameters<MockBuildPluginRuntimeLoadOptions>[0]
+    | Parameters<MockBuildPluginRuntimeLoadOptionsFromValues>[0],
+  overrides?: Parameters<MockBuildPluginRuntimeLoadOptions>[1],
+): ReturnType<MockBuildPluginRuntimeLoadOptions> {
+  return {
     config: values.config,
     activationSourceConfig: values.activationSourceConfig,
     autoEnabledReasons: values.autoEnabledReasons,
@@ -154,27 +167,8 @@ vi.mock("../plugins/runtime/load-context.js", () => ({
     env: values.env,
     logger: values.logger,
     ...overrides,
-  }),
-  buildPluginRuntimeLoadOptions: (
-    context: {
-      config: unknown;
-      activationSourceConfig: unknown;
-      autoEnabledReasons: Readonly<Record<string, string[]>>;
-      workspaceDir: string | undefined;
-      env: NodeJS.ProcessEnv;
-      logger: typeof logger;
-    },
-    overrides?: Record<string, unknown>,
-  ) => ({
-    config: context.config,
-    activationSourceConfig: context.activationSourceConfig,
-    autoEnabledReasons: context.autoEnabledReasons,
-    workspaceDir: context.workspaceDir,
-    env: context.env,
-    logger: context.logger,
-    ...overrides,
-  }),
-}));
+  };
+}
 
 describe("ensurePluginRegistryLoaded", () => {
   beforeAll(async () => {

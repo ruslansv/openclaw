@@ -318,8 +318,9 @@ export async function incrementCompactionCount(params: {
   };
   if (storePath) {
     await updateSessionStore(storePath, (store) => {
+      const persistedBase = store[sessionKey] ?? entry;
       store[sessionKey] = {
-        ...store[sessionKey],
+        ...persistedBase,
         ...updates,
       };
     });
