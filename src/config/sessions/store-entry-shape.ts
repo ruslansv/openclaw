@@ -1,7 +1,7 @@
 import { parseSessionLabel } from "../../sessions/session-label.js";
 import { isRecord } from "../../shared/record-coerce.js";
 import { validateSessionId } from "./paths.js";
-import type { SessionEntry } from "./types.js";
+import type { SessionEntry, SessionGoal } from "./types.js";
 
 function isSafeSessionId(value: unknown): value is string {
   if (typeof value !== "string") {
@@ -36,6 +36,18 @@ function normalizeGroupActivation(value: unknown): SessionEntry["groupActivation
   return value === "mention" || value === "always" ? value : undefined;
 }
 
+function normalizeOptionalNonNegativeNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function normalizeOptionalTrimmedString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
+}
+
 function normalizeMetadataOnlyEntry(value: Record<string, unknown>): SessionEntry | undefined {
   const next: Partial<SessionEntry> = {};
 
@@ -58,6 +70,50 @@ function normalizeMetadataOnlyEntry(value: Record<string, unknown>): SessionEntr
     if (typeof value.groupActivationNeedsSystemIntro === "boolean") {
       next.groupActivationNeedsSystemIntro = value.groupActivationNeedsSystemIntro;
     }
+  }
+
+  for (const key of [
+    "inputTokens",
+    "outputTokens",
+    "totalTokens",
+    "cacheRead",
+    "cacheWrite",
+    "estimatedCostUsd",
+    "contextTokens",
+  ] as const) {
+    const normalized = normalizeOptionalNonNegativeNumber(value[key]);
+    if (normalized !== undefined) {
+      next[key] = normalized;
+    }
+  }
+
+  if (typeof value.totalTokensFresh === "boolean") {
+    next.totalTokensFresh = value.totalTokensFresh;
+  }
+
+  if (isRecord(value.goal)) {
+    next.goal = value.goal as SessionGoal;
+  }
+
+  const lastChannel = normalizeOptionalTrimmedString(value.lastChannel);
+  if (lastChannel) {
+    next.lastChannel = lastChannel as SessionEntry["lastChannel"];
+  }
+  const lastTo = normalizeOptionalTrimmedString(value.lastTo);
+  if (lastTo) {
+    next.lastTo = lastTo;
+  }
+  const lastAccountId = normalizeOptionalTrimmedString(value.lastAccountId);
+  if (lastAccountId) {
+    next.lastAccountId = lastAccountId;
+  }
+  const lastThreadId =
+    normalizeOptionalTrimmedString(value.lastThreadId) ??
+    (typeof value.lastThreadId === "number" && Number.isFinite(value.lastThreadId)
+      ? value.lastThreadId
+      : undefined);
+  if (lastThreadId !== undefined) {
+    next.lastThreadId = lastThreadId;
   }
 
   return Object.keys(next).length > 0 ? (next as SessionEntry) : undefined;
