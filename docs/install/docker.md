@@ -160,6 +160,11 @@ use `OPENCLAW_IMAGE_APT_PACKAGES` during image build. The legacy
 use `OPENCLAW_IMAGE_PIP_PACKAGES`; pin versions and use only package indexes you
 trust.
 
+Direct `docker compose build` and `docker compose up --build` also read
+`OPENCLAW_EXTENSIONS` from `.env` and pass it to the Dockerfile, so local
+source-built images can keep selected externalized plugin bundles in sync with
+the checkout.
+
 Maintainers can test bundled plugin source against a packaged image by mounting
 one plugin source directory over its packaged source path, for example
 `OPENCLAW_EXTRA_MOUNTS=/path/to/fork/extensions/synology-chat:/app/extensions/synology-chat:ro`.
