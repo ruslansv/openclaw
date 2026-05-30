@@ -1418,6 +1418,12 @@ describe("scripts/docker/setup.sh", () => {
     expect(compose).not.toContain("/app/.env:ro");
   });
 
+  it("passes optional bundled plugin keep-list args into direct compose builds", async () => {
+    const compose = await readFile(join(repoRoot, "docker-compose.yml"), "utf8");
+    expect(compose).toContain("build:\n      context: .");
+    expect(compose).toContain("OPENCLAW_EXTENSIONS: ${OPENCLAW_EXTENSIONS:-}");
+  });
+
   it("keeps docker-compose timezone env defaults aligned across services", async () => {
     const compose = await readFile(join(repoRoot, "docker-compose.yml"), "utf8");
     expect(compose.match(/TZ: \$\{OPENCLAW_TZ:-UTC\}/g)).toHaveLength(2);

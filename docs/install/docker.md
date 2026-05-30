@@ -218,6 +218,11 @@ staging without gaining a compiled root dist entry. A selected plugin with
 unified build entries must compile successfully; unselected external plugin
 source and runtime output are pruned.
 
+Direct `docker compose build` and `docker compose up --build` also read
+`OPENCLAW_EXTENSIONS` from `.env` and pass it to the Dockerfile, so local
+source-built images can keep selected externalized plugin bundles in sync with
+the checkout.
+
 For example, these commands build separate, multi-architecture standalone
 FakeCo gateway images for ClickClack, Slack, and Microsoft Teams. ClawRouter is
 already part of the root OpenClaw runtime, so the ClickClack image selects only
@@ -268,8 +273,8 @@ separate x86_64 appliance archive containing an OpenClaw npm tarball and pins
 the Node, archive, and manifest digests. Build that appliance independently
 from the same landed OpenClaw source.
 
-To test bundled plugin source against a packaged image, mount one plugin source
-directory over its packaged source path, for example
+Maintainers can test bundled plugin source against a packaged image by mounting
+one plugin source directory over its packaged source path, for example
 `OPENCLAW_EXTRA_MOUNTS=/path/to/fork/extensions/synology-chat:/app/extensions/synology-chat:ro`.
 That mounted source directory overrides the matching compiled
 `/app/dist/extensions/synology-chat` bundle for the same plugin id.
