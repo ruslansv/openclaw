@@ -103,6 +103,11 @@ WORKSPACE_DIR="$(resolve_abs_path "$WORKSPACE_DIR")"
 
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 BACKUP_NAME="${BACKUP_NAME:-openclaw-backup-${timestamp}}"
+case "$BACKUP_NAME" in
+  *[!/A-Za-z0-9._-]*|*/*|.*|*..*)
+    fail "--name must be a simple filename prefix using letters, numbers, dot, underscore, or dash"
+    ;;
+esac
 mkdir -p "$OUTPUT_DIR"
 
 tmpdir="$(mktemp -d)"
@@ -129,8 +134,9 @@ if [[ -f "$ENV_FILE" ]]; then
   cp "$ENV_FILE" "$stage/payload/repo/.env"
 fi
 
-for file in docker-compose.yml docker-compose.extra.yml Dockerfile docker-setup.sh; do
+for file in Dockerfile docker-compose.yml docker-compose.override.yml docker-compose.extra.yml scripts/docker/setup.sh; do
   if [[ -f "$REPO_ROOT/$file" ]]; then
+    mkdir -p "$stage/payload/repo/$(dirname "$file")"
     cp "$REPO_ROOT/$file" "$stage/payload/repo/$file"
   fi
 done
