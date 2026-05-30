@@ -157,6 +157,7 @@ Optional variables accepted by `scripts/docker/setup.sh` (and, for the gateway c
 | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
 | `OPENCLAW_IMAGE`                                | Use a remote image instead of building locally                                                                    |
 | `OPENCLAW_IMAGE_APT_PACKAGES`                   | Install extra apt packages during build (space-separated). Legacy alias: `OPENCLAW_DOCKER_APT_PACKAGES`           |
+| `OPENCLAW_DOCKER_APT_PACKAGES`                  | Legacy alias for extra apt packages during build                                                                  |
 | `OPENCLAW_IMAGE_PIP_PACKAGES`                   | Install extra Python packages during build (space-separated)                                                      |
 | `OPENCLAW_EXTENSIONS`                           | Compile/package supported selected plugins and install their runtime dependencies (comma- or space-separated ids) |
 | `OPENCLAW_DOCKER_BUILD_NODE_OPTIONS`            | Override the local source-build Node options (default `--max-old-space-size=8192`)                                |
@@ -168,8 +169,14 @@ Optional variables accepted by `scripts/docker/setup.sh` (and, for the gateway c
 | `OPENCLAW_SANDBOX`                              | Opt in to sandbox bootstrap (`1`, `true`, `yes`, `on`)                                                            |
 | `OPENCLAW_SKIP_ONBOARDING`                      | Skip the interactive onboarding step (`1`, `true`, `yes`, `on`)                                                   |
 | `OPENCLAW_DOCKER_SOCKET`                        | Override the Docker socket path                                                                                   |
+| `OPENCLAW_INSTALL_DOCKER_CLI`                   | Install Docker CLI in the image (auto-set for sandbox bootstrap)                                                  |
+| `OPENCLAW_ALLOW_INSECURE_PRIVATE_WS`            | Allow trusted private-network `ws://` client targets                                                              |
+| `OPENCLAW_TZ`                                   | Set container timezone (for example `America/Los_Angeles`)                                                        |
 | `OPENCLAW_DISABLE_BONJOUR`                      | Force Bonjour/mDNS advertising on (`0`) or off (`1`); see [Bonjour / mDNS](#bonjour--mdns)                        |
 | `OPENCLAW_DISABLE_BUNDLED_SOURCE_OVERLAYS`      | Disable bundled plugin source bind-mount overlays                                                                 |
+| `OPENCLAW_DOCKER_EXEC_SECURITY`                 | Pin `tools.exec.security` during Docker setup                                                                     |
+| `OPENCLAW_DOCKER_EXEC_ASK`                      | Pin `tools.exec.ask` during Docker setup                                                                          |
+| `OPENCLAW_DOCKER_EXEC_ASK_FALLBACK`             | Pin gateway exec approval fallback policy during Docker setup                                                     |
 | `OTEL_EXPORTER_OTLP_ENDPOINT`                   | Shared OTLP/HTTP collector endpoint for OpenTelemetry export                                                      |
 | `OTEL_EXPORTER_OTLP_*_ENDPOINT`                 | Signal-specific OTLP endpoints for traces, metrics, or logs                                                       |
 | `OTEL_EXPORTER_OTLP_PROTOCOL`                   | OTLP protocol override. Only `http/protobuf` is supported today                                                   |
@@ -177,9 +184,21 @@ Optional variables accepted by `scripts/docker/setup.sh` (and, for the gateway c
 | `OTEL_SEMCONV_STABILITY_OPT_IN`                 | Opt in to latest experimental GenAI semantic attributes                                                           |
 | `OPENCLAW_OTEL_PRELOADED`                       | Skip starting a second OpenTelemetry SDK when one is preloaded                                                    |
 
-The official image ships no Homebrew. During onboarding, OpenClaw hides brew-only skill dependency installers in a Linux container without `brew`; provide those dependencies through a custom image or install manually. Use `OPENCLAW_IMAGE_APT_PACKAGES` for Debian-packaged dependencies and `OPENCLAW_IMAGE_PIP_PACKAGES` for Python dependencies (runs `python3 -m pip install --break-system-packages` at build time, so pin versions and use only indexes you trust).
+The Dockerfile includes Linuxbrew for Linux container workflows, but brew-only
+macOS skill installers still need host-side handling. For dependencies
+available from Debian packages, use `OPENCLAW_IMAGE_APT_PACKAGES` during image
+build. The legacy `OPENCLAW_DOCKER_APT_PACKAGES` name is still accepted. For
+Python dependencies, use `OPENCLAW_IMAGE_PIP_PACKAGES`; pin versions and use
+only package indexes you trust.
 
-If Docker reports `ResourceExhausted`, `cannot allocate memory`, or aborts during `tsdown`, increase the Docker builder memory limit or retry with smaller explicit heaps:
+Source builds default `OPENCLAW_DOCKER_BUILD_NODE_OPTIONS` to
+`--max-old-space-size=8192` and leave
+`OPENCLAW_DOCKER_BUILD_TSDOWN_MAX_OLD_SPACE_MB` unset so the tsdown wrapper can
+respect container memory limits. They also default
+`OPENCLAW_DOCKER_BUILD_SKIP_DTS=1` because runtime images prune declaration
+files after build. If Docker reports `ResourceExhausted`, `cannot allocate
+memory`, or aborts during `tsdown`, increase the Docker builder memory limit or
+retry with smaller explicit heaps:
 
 ```bash
 OPENCLAW_DOCKER_BUILD_NODE_OPTIONS=--max-old-space-size=4096 OPENCLAW_DOCKER_BUILD_TSDOWN_MAX_OLD_SPACE_MB=4096
@@ -249,7 +268,11 @@ separate x86_64 appliance archive containing an OpenClaw npm tarball and pins
 the Node, archive, and manifest digests. Build that appliance independently
 from the same landed OpenClaw source.
 
-To test bundled plugin source against a packaged image, mount one plugin source directory over its packaged source path, e.g. `OPENCLAW_EXTRA_MOUNTS=/path/to/fork/extensions/synology-chat:/app/extensions/synology-chat:ro`. That overrides the matching compiled `/app/dist/extensions/synology-chat` bundle for the same plugin id.
+To test bundled plugin source against a packaged image, mount one plugin source
+directory over its packaged source path, for example
+`OPENCLAW_EXTRA_MOUNTS=/path/to/fork/extensions/synology-chat:/app/extensions/synology-chat:ro`.
+That mounted source directory overrides the matching compiled
+`/app/dist/extensions/synology-chat` bundle for the same plugin id.
 
 ### Observability
 
@@ -271,6 +294,120 @@ http://<gateway-host>:18789/api/diagnostics/prometheus
 ```
 
 The route is protected by Gateway authentication; don't expose a separate public `/metrics` port or unauthenticated reverse-proxy path. See [Prometheus metrics](/gateway/prometheus).
+
+### Use a remote image (skip local build)
+
+Use image name `ghcr.io/openclaw/openclaw` (not similarly named Docker Hub
+images).
+
+Common tags:
+
+- `main` — latest build from `main`
+- `<version>` — release tag builds (for example `2026.3.12`)
+- `latest` — latest stable release tag
+
+```bash
+export OPENCLAW_IMAGE="ghcr.io/openclaw/openclaw:latest"
+./scripts/docker/setup.sh
+```
+
+### Extra mounts (optional)
+
+Set `OPENCLAW_EXTRA_MOUNTS` to add host directories to both containers:
+
+```bash
+export OPENCLAW_EXTRA_MOUNTS="$HOME/.codex:/home/node/.codex:ro,$HOME/github:/home/node/github:rw"
+./scripts/docker/setup.sh
+```
+
+Notes:
+
+- Paths must be shared with Docker Desktop on macOS/Windows.
+- Each entry must be `source:target[:options]` with no spaces or control characters.
+- Rerun the setup script after changing the value so `docker-compose.extra.yml`
+  is regenerated.
+
+### Persist the entire container home (optional)
+
+Use `OPENCLAW_HOME_VOLUME` if you want `/home/node` to survive container
+recreation:
+
+```bash
+export OPENCLAW_HOME_VOLUME="openclaw_home"
+./scripts/docker/setup.sh
+```
+
+OpenClaw bootstraps the writable tool dirs inside that volume on setup and on
+every `docker compose up`, so `pnpm`, `npm -g`, `go install`, and cache writes
+still work after the fresh `/home/node` mount hides the image-baked paths.
+
+### Install extra apt packages (optional)
+
+`OPENCLAW_DOCKER_APT_PACKAGES` installs additional Debian packages at build time:
+
+```bash
+export OPENCLAW_DOCKER_APT_PACKAGES="ffmpeg build-essential"
+./scripts/docker/setup.sh
+```
+
+The Docker image already includes a baseline for common container workflows:
+`cron`, `gosu`, `pnpm`, non-root `npm -g`, `go install`, Linuxbrew, and browser
+runtime libraries. Add only the extra packages your environment needs.
+
+### Install browser dependencies at build time (optional)
+
+If you want Chromium baked into the image instead of downloading it later:
+
+```bash
+export OPENCLAW_INSTALL_BROWSER=1
+./scripts/docker/setup.sh
+```
+
+This installs Chromium through Playwright during the image build, configures
+Docker-safe browser defaults automatically, and wires
+`browser.executablePath` to the bundled
+`openclaw-playwright-chromium` launcher. Verify it from the running gateway:
+
+```bash
+docker compose exec openclaw-gateway node dist/index.js browser status
+```
+
+### Keep permissive exec policy in Docker (optional, trusted setups only)
+
+If you want Docker setup to keep gateway exec fully permissive across rebuilds
+and restarts:
+
+```bash
+export OPENCLAW_DOCKER_EXEC_SECURITY=full
+export OPENCLAW_DOCKER_EXEC_ASK=off
+export OPENCLAW_DOCKER_EXEC_ASK_FALLBACK=full
+./scripts/docker/setup.sh
+```
+
+This pins both `tools.exec.*` config and the gateway `exec-approvals.json`
+defaults for the `main` agent. Use this only on a trusted single-user gateway,
+because it disables interactive approval prompts for host exec.
+
+### Pre-install extension dependencies (optional)
+
+Extensions with their own `package.json` can be baked into the image:
+
+```bash
+export OPENCLAW_EXTENSIONS="diagnostics-otel matrix"
+./scripts/docker/setup.sh
+```
+
+### Base image metadata
+
+The main Docker image uses `node:24-bookworm` and publishes OCI base-image
+annotations including:
+
+- `org.opencontainers.image.base.name`
+- `org.opencontainers.image.base.digest`
+- `org.opencontainers.image.source`
+- `org.opencontainers.image.documentation`
+
+Reference: [OCI image annotations](https://github.com/opencontainers/image-spec/blob/main/annotations.md)
 
 ### Health checks
 
@@ -407,7 +544,14 @@ The auth-profile secret directory stores the local encryption key for OAuth-back
 
 Installed downloadable plugins store package state under the mounted OpenClaw home, so install records and package roots survive container replacement; gateway startup does not regenerate bundled-plugin dependency trees.
 
-For full VM persistence details, see [Docker VM Runtime - What persists where](/install/docker-vm-runtime#what-persists-where).
+Compose reads the project-root Docker `.env` for variable interpolation, but
+the containers only receive the allowlisted environment keys declared in
+`docker-compose.yml`. Put extra OpenClaw runtime env vars in
+`$OPENCLAW_CONFIG_DIR/.env`; that file lives inside the mounted config
+directory and is preserved across container replacement.
+
+For full persistence details on VM deployments, see
+[Docker VM Runtime - What persists where](/install/docker-vm-runtime#what-persists-where).
 
 **Disk growth hotspots:** `media/`, per-agent SQLite databases, legacy session JSONL transcripts, the shared SQLite state database, installed plugin package roots, and rolling file logs under `/tmp/openclaw/`.
 
