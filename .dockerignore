@@ -10,6 +10,8 @@
 .bun
 .artifacts
 **/.artifacts
+backups
+**/backups
 .local
 **/.local
 .pi

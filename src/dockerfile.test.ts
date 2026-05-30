@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 const repoRoot = resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const dockerfilePath = join(repoRoot, "Dockerfile");
 const dockerInstallDocsPath = join(repoRoot, "docs/install/docker.md");
+const dockerignorePath = join(repoRoot, ".dockerignore");
 const dockerReleaseWorkflowPath = join(repoRoot, ".github/workflows/docker-release.yml");
 const fullReleaseValidationWorkflowPath = join(
   repoRoot,
@@ -20,6 +21,12 @@ function collapseDockerContinuations(dockerfile: string): string {
 }
 
 describe("Dockerfile", () => {
+  it("keeps local backup archives out of Docker build contexts", async () => {
+    const dockerignore = await readFile(dockerignorePath, "utf8");
+    expect(dockerignore).toMatch(/^backups$/m);
+    expect(dockerignore).toMatch(/^\*\*\/backups$/m);
+  });
+
   it("does not force an external Dockerfile frontend pull", async () => {
     for (const path of dockerSetupDockerfilePaths) {
       const dockerfile = await readFile(join(repoRoot, path), "utf8");
