@@ -479,7 +479,7 @@ describe("scripts/docker/setup.sh", () => {
       `${join(activeSandbox.rootDir, "auth-profile-secrets")}:/home/node/.config/openclaw`,
     );
     expect(extraCompose).toContain(
-      "openclaw-init:\n    volumes:\n      - openclaw-home:/home/node",
+      '  openclaw-init:\n    volumes:\n      - "openclaw-home:/home/node"',
     );
     expect(extraCompose).toContain("volumes:");
     expect(extraCompose).toContain("openclaw-home:");
