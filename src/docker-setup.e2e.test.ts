@@ -135,6 +135,24 @@ if [[ "\${1:-}" == "compose" ]]; then
     fi
     exit 0
   fi
+  if [[ "$*" == *"config get tools.sandbox.tools --json"* ]]; then
+    echo "compose $*" >>"$log"
+    if [[ -n "\${DOCKER_STUB_SANDBOX_TOOLS_JSON:-}" ]]; then
+      printf '%s\n' "$DOCKER_STUB_SANDBOX_TOOLS_JSON"
+    else
+      printf '{}\n'
+    fi
+    exit 0
+  fi
+  if [[ "$*" == *"config get agents --json"* ]]; then
+    echo "compose $*" >>"$log"
+    if [[ -n "\${DOCKER_STUB_AGENTS_JSON:-}" ]]; then
+      printf '%s\n' "$DOCKER_STUB_AGENTS_JSON"
+    else
+      printf '{}\n'
+    fi
+    exit 0
+  fi
   if [[ "$*" == *"dist/index.js config get "* ]]; then
     args=("$@")
     path_index=$((\${#args[@]} - 1))
@@ -153,24 +171,10 @@ if [[ "\${1:-}" == "compose" ]]; then
       "\${args[$security_index]}" \
       "\${args[$ask_index]}" \
       "\${args[$ask_fallback_index]}"
+    echo "compose $*" >>"$log"
+    exit 0
   fi
   echo "compose $*" >>"$log"
-  if [[ "$*" == *"config get tools.sandbox.tools --json"* ]]; then
-    if [[ -n "\${DOCKER_STUB_SANDBOX_TOOLS_JSON:-}" ]]; then
-      printf '%s\n' "$DOCKER_STUB_SANDBOX_TOOLS_JSON"
-    else
-      printf '{}\n'
-    fi
-    exit 0
-  fi
-  if [[ "$*" == *"config get agents --json"* ]]; then
-    if [[ -n "\${DOCKER_STUB_AGENTS_JSON:-}" ]]; then
-      printf '%s\n' "$DOCKER_STUB_AGENTS_JSON"
-    else
-      printf '{}\n'
-    fi
-    exit 0
-  fi
   args=("$@")
   for ((i = 0; i + 4 < \${#args[@]}; i++)); do
     if [[ "\${args[$i]}" == "--entrypoint" &&

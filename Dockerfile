@@ -280,16 +280,12 @@ RUN install -d -m 0755 "$COREPACK_HOME" && \
 # optional extra packages needed by local skills or plugins.
 # Example: docker build --build-arg OPENCLAW_IMAGE_APT_PACKAGES="python3 wget" .
 # Legacy alias: OPENCLAW_DOCKER_APT_PACKAGES is still accepted as a fallback.
-ARG OPENCLAW_DOCKER_APT_UPGRADE=1
 ARG OPENCLAW_IMAGE_APT_PACKAGES
 ARG OPENCLAW_DOCKER_APT_PACKAGES=""
 RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,id=openclaw-bookworm-apt-lists,target=/var/lib/apt,sharing=locked \
     set -eux; \
     apt-get update; \
-    if [ "${OPENCLAW_DOCKER_APT_UPGRADE}" != "0" ]; then \
-      DEBIAN_FRONTEND=noninteractive apt-get upgrade -y --no-install-recommends; \
-    fi; \
     BASE_APT_PACKAGES="\
 cron gosu \
 git curl wget ca-certificates jq unzip ripgrep procps hostname openssl lsof file \
