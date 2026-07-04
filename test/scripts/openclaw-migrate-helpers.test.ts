@@ -1,15 +1,17 @@
 // Docker migration helper tests cover host-state backup and restore invariants.
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
 const BACKUP_SCRIPT = "scripts/migrate/backup-openclaw.sh";
 const RESTORE_SCRIPT = "scripts/migrate/restore-openclaw.sh";
 
 let tempRoot: string | undefined;
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 function runScript(script: string, args: string[]) {
   return spawnSync("bash", [script, ...args], {
@@ -29,14 +31,7 @@ async function writeFixtureFile(filePath: string, value: string) {
 
 describe("openclaw Docker migration helpers", () => {
   beforeEach(() => {
-    tempRoot = mkdtempSync(path.join(tmpdir(), "openclaw-migrate-helper-"));
-  });
-
-  afterEach(() => {
-    if (tempRoot) {
-      rmSync(tempRoot, { recursive: true, force: true });
-      tempRoot = undefined;
-    }
+    tempRoot = tempDirs.make("openclaw-migrate-helper-");
   });
 
   it("backs up and restores config, workspace, auth-profile secrets, and archive permissions", async () => {
