@@ -4289,6 +4289,14 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H3: Environment variables
   - H3: Source-built images with selected plugins
   - H3: Observability
+  - H3: Use a remote image (skip local build)
+  - H3: Extra mounts (optional)
+  - H3: Persist the entire container home (optional)
+  - H3: Install extra apt packages (optional)
+  - H3: Install browser dependencies at build time (optional)
+  - H3: Keep permissive exec policy in Docker (optional, trusted setups only)
+  - H3: Pre-install extension dependencies (optional)
+  - H3: Base image metadata
   - H3: Health checks
   - H3: LAN vs loopback
   - H3: Host local providers
@@ -4296,6 +4304,13 @@ Do not edit it by hand; run `pnpm docs:map:gen`.
   - H3: Bonjour / mDNS
   - H3: Storage and persistence
   - H3: Shell helpers (optional)
+  - H3: Keep macOS awake (optional)
+  - H2: Backup and migration (Intel Mac to Apple Silicon)
+  - H3: 1) Create a backup on the source host
+  - H3: 2) Transfer the archive to the target host
+  - H3: 3) Restore on the target host
+  - H3: 4) Rebuild and validate on the target architecture
+  - H3: Architecture migration note
   - H3: Running on a VPS?
   - H2: Agent sandbox
   - H3: Quick enable
