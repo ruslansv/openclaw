@@ -218,7 +218,6 @@ staging without gaining a compiled root dist entry. A selected plugin with
 unified build entries must compile successfully; unselected external plugin
 source and runtime output are pruned.
 
-
 Direct `docker compose build` and `docker compose up --build` also read
 `OPENCLAW_EXTENSIONS` from `.env` and pass it to the Dockerfile, so local
 source-built images can keep selected externalized plugin bundles in sync with
