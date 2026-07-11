@@ -122,10 +122,8 @@ function normalizeMetadataOnlyEntry(value: Record<string, unknown>): SessionEntr
 }
 
 function normalizeSessionlessLockedEntry(value: Record<string, unknown>): SessionEntry {
-  const next: Partial<SessionEntry> = {
-    ...(normalizeMetadataOnlyEntry(value) ?? {}),
-    modelSelectionLocked: true,
-  };
+  const next: Partial<SessionEntry> = normalizeMetadataOnlyEntry(value) ?? {};
+  next.modelSelectionLocked = true;
   const agentHarnessId = normalizeOptionalTrimmedString(value.agentHarnessId);
   if (agentHarnessId) {
     next.agentHarnessId = agentHarnessId;
