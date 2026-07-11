@@ -122,7 +122,7 @@ function normalizeMetadataOnlyEntry(value: Record<string, unknown>): SessionEntr
 }
 
 function normalizeSessionlessLockedEntry(value: Record<string, unknown>): SessionEntry {
-  const next: SessionEntry = {
+  const next: Partial<SessionEntry> = {
     ...(normalizeMetadataOnlyEntry(value) ?? {}),
     modelSelectionLocked: true,
   };
@@ -136,7 +136,7 @@ function normalizeSessionlessLockedEntry(value: Record<string, unknown>): Sessio
   if (typeof value.model === "string") {
     next.model = value.model;
   }
-  return next;
+  return next as SessionEntry;
 }
 
 /** Normalizes persisted session store entries before they reach runtime callers. */
