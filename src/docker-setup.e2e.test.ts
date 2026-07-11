@@ -1,6 +1,6 @@
 // E2E tests for Docker setup script behavior and generated commands.
 import { spawnSync } from "node:child_process";
-import { chmod, copyFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -396,7 +396,14 @@ async function runDockerSetupWithUnsetGatewayToken(
   return { result, envFile };
 }
 
-async function withUnixSocket<T>(socketPath: string, run: () => Promise<T>): Promise<T> {
+async function withUnixSocket<T>(
+  label: string,
+  run: (socketPath: string) => Promise<T>,
+): Promise<T> {
+  // macOS caps Unix socket paths tightly, so keep these test sockets out of
+  // the longer per-suite temp root.
+  const socketDir = await mkdtemp(join("/tmp", `openclaw-${label}-`));
+  const socketPath = join(socketDir, "docker.sock");
   const server = createServer();
   await new Promise<void>((resolveValue, reject) => {
     const onError = (error: Error) => {
@@ -413,12 +420,12 @@ async function withUnixSocket<T>(socketPath: string, run: () => Promise<T>): Pro
   });
 
   try {
-    return await run();
+    return await run(socketPath);
   } finally {
     await new Promise<void>((resolveLocal) => {
       server.close(() => resolveLocal());
     });
-    await rm(socketPath, { force: true });
+    await rm(socketDir, { force: true, recursive: true });
   }
 }
 
@@ -668,9 +675,8 @@ describe("scripts/docker/setup.sh", () => {
       "FROM scratch\n",
     );
     await resetDockerLog(activeSandbox);
-    const socketPath = join(activeSandbox.rootDir, "buildkit.sock");
 
-    await withUnixSocket(socketPath, async () => {
+    await withUnixSocket("buildkit", async (socketPath) => {
       const result = runDockerSetup(activeSandbox, {
         OPENCLAW_SANDBOX: "1",
         OPENCLAW_DOCKER_SOCKET: socketPath,
@@ -749,9 +755,8 @@ describe("scripts/docker/setup.sh", () => {
       "FROM scratch\n",
     );
     await resetDockerLog(activeSandbox);
-    const socketPath = join(activeSandbox.rootDir, "sb.sock");
 
-    await withUnixSocket(socketPath, async () => {
+    await withUnixSocket("offline-sandbox", async (socketPath) => {
       const defaultImage = "registry.example/openclaw-sandbox:approved";
       const agentImage = " registry.example/openclaw-sandbox:agent ";
       const result = runDockerSetup(
@@ -793,9 +798,8 @@ describe("scripts/docker/setup.sh", () => {
   it("offline sandbox validates only effective Docker and browser images", async () => {
     const activeSandbox = requireSandbox(sandbox);
     await resetDockerLog(activeSandbox);
-    const socketPath = join(activeSandbox.rootDir, "eff.sock");
 
-    await withUnixSocket(socketPath, async () => {
+    await withUnixSocket("effective-images", async (socketPath) => {
       const defaultImage = "registry.example/openclaw-sandbox:default";
       const browserImage = "registry.example/openclaw-sandbox-browser:default";
       const ignoredImages = [
@@ -863,9 +867,8 @@ describe("scripts/docker/setup.sh", () => {
   it("offline sandbox rejects an incompatible browser image", async () => {
     const activeSandbox = requireSandbox(sandbox);
     await resetDockerLog(activeSandbox);
-    const socketPath = join(activeSandbox.rootDir, "br.sock");
 
-    await withUnixSocket(socketPath, async () => {
+    await withUnixSocket("browser-image", async (socketPath) => {
       const browserImage = "registry.example/openclaw-sandbox-browser:stale";
       const result = runDockerSetup(
         activeSandbox,
@@ -1209,9 +1212,8 @@ describe("scripts/docker/setup.sh", () => {
       join(activeSandbox.rootDir, "docker-compose.sandbox.yml"),
       "services:\n  openclaw-gateway:\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock\n",
     );
-    const socketPath = join(activeSandbox.rootDir, "missing-cli.sock");
 
-    await withUnixSocket(socketPath, async () => {
+    await withUnixSocket("missing-cli", async (socketPath) => {
       const result = runDockerSetup(activeSandbox, {
         OPENCLAW_SANDBOX: "1",
         OPENCLAW_DOCKER_SOCKET: socketPath,
@@ -1229,9 +1231,8 @@ describe("scripts/docker/setup.sh", () => {
   it("keeps offline policy when sandbox config writes fail and the gateway rolls back", async () => {
     const activeSandbox = requireSandbox(sandbox);
     await resetDockerLog(activeSandbox);
-    const socketPath = join(activeSandbox.rootDir, "sandbox.sock");
 
-    await withUnixSocket(socketPath, async () => {
+    await withUnixSocket("sandbox-rollback", async (socketPath) => {
       const result = runDockerSetup(
         activeSandbox,
         {
