@@ -121,6 +121,24 @@ function normalizeMetadataOnlyEntry(value: Record<string, unknown>): SessionEntr
   return Object.keys(next).length > 0 ? (next as SessionEntry) : undefined;
 }
 
+function normalizeSessionlessLockedEntry(value: Record<string, unknown>): SessionEntry {
+  const next: SessionEntry = {
+    ...(normalizeMetadataOnlyEntry(value) ?? {}),
+    modelSelectionLocked: true,
+  };
+  const agentHarnessId = normalizeOptionalTrimmedString(value.agentHarnessId);
+  if (agentHarnessId) {
+    next.agentHarnessId = agentHarnessId;
+  }
+  if (typeof value.modelProvider === "string") {
+    next.modelProvider = value.modelProvider;
+  }
+  if (typeof value.model === "string") {
+    next.model = value.model;
+  }
+  return next;
+}
+
 /** Normalizes persisted session store entries before they reach runtime callers. */
 export function normalizePersistedSessionEntryShape(value: unknown): SessionEntry | undefined {
   if (!isRecord(value)) {
@@ -132,6 +150,11 @@ export function normalizePersistedSessionEntryShape(value: unknown): SessionEntr
   const sessionFile = typeof value.sessionFile === "string" ? value.sessionFile.trim() : undefined;
 
   if (value.sessionId === undefined) {
+    if (modelSelectionLocked) {
+      // Keep lock-bearing rows lock-bearing so store-level invariant checks can
+      // reject reserved or harness-owned rows instead of normalizing them away.
+      return normalizeSessionlessLockedEntry(value);
+    }
     // Routing metadata can be created before a transcript id exists; preserve
     // the safe subset instead of dropping useful delivery/session state.
     return normalizeMetadataOnlyEntry(value);
