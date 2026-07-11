@@ -1,11 +1,11 @@
 // E2E tests for Docker setup script behavior and generated commands.
 import { spawnSync } from "node:child_process";
-import { chmod, copyFile, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { createSuiteTempRootTracker } from "./test-helpers/temp-dir.js";
+import { createSuiteTempRootTracker, withTempDir } from "./test-helpers/temp-dir.js";
 
 const repoRoot = resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 
@@ -400,33 +400,34 @@ async function withUnixSocket<T>(
   label: string,
   run: (socketPath: string) => Promise<T>,
 ): Promise<T> {
-  // macOS caps Unix socket paths tightly, so keep these test sockets out of
-  // the longer per-suite temp root.
-  const socketDir = await mkdtemp(join("/tmp", `openclaw-${label}-`));
-  const socketPath = join(socketDir, "docker.sock");
-  const server = createServer();
-  await new Promise<void>((resolveValue, reject) => {
-    const onError = (error: Error) => {
-      server.off("listening", onListening);
-      reject(error);
-    };
-    const onListening = () => {
-      server.off("error", onError);
-      resolveValue();
-    };
-    server.once("error", onError);
-    server.once("listening", onListening);
-    server.listen(socketPath);
-  });
-
-  try {
-    return await run(socketPath);
-  } finally {
-    await new Promise<void>((resolveLocal) => {
-      server.close(() => resolveLocal());
+  return withTempDir({ prefix: `openclaw-${label}-`, parentDir: "/tmp" }, async (socketDir) => {
+    // macOS caps Unix socket paths tightly, so keep these test sockets out of
+    // the longer per-suite temp root.
+    const socketPath = join(socketDir, "docker.sock");
+    const server = createServer();
+    await new Promise<void>((resolveValue, reject) => {
+      const onError = (error: Error) => {
+        server.off("listening", onListening);
+        reject(error);
+      };
+      const onListening = () => {
+        server.off("error", onError);
+        resolveValue();
+      };
+      server.once("error", onError);
+      server.once("listening", onListening);
+      server.listen(socketPath);
     });
-    await rm(socketDir, { force: true, recursive: true });
-  }
+
+    try {
+      return await run(socketPath);
+    } finally {
+      await new Promise<void>((resolveLocal) => {
+        server.close(() => resolveLocal());
+      });
+      await rm(socketPath, { force: true });
+    }
+  });
 }
 
 function resolveBashForCompatCheck(): string | null {
