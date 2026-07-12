@@ -2,9 +2,52 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { discoverAuthStorage, discoverModels } from "./agent-model-discovery.js";
+
+type NormalizeResolvedModelParams = {
+  config?: {
+    models?: {
+      providers?: {
+        openai?: {
+          api?: string;
+        };
+      };
+    };
+  };
+  context: {
+    config?: {
+      models?: {
+        providers?: {
+          openai?: {
+            api?: string;
+          };
+        };
+      };
+    };
+    model: Record<string, unknown> & {
+      api?: string | null;
+    };
+  };
+};
+
+const providerRuntimeMocks = vi.hoisted(() => ({
+  applyProviderResolvedTransportWithPlugin: vi.fn(() => undefined),
+  // This file verifies discovery's wrapper contract; provider runtime behavior has
+  // dedicated plugin tests and can deadlock this shard when cold-loaded in parallel.
+  normalizeProviderResolvedModelWithPlugin: vi.fn((params: NormalizeResolvedModelParams) => {
+    const authoredApi =
+      params.context.config?.models?.providers?.openai?.api ??
+      params.config?.models?.providers?.openai?.api;
+    return {
+      ...params.context.model,
+      api: authoredApi === "openai-completions" ? "openai-completions" : "openai-responses",
+    };
+  }),
+}));
+
+vi.mock("../plugins/provider-runtime.js", () => providerRuntimeMocks);
 
 function writeModelsJson(agentDir: string, modelId: string): void {
   fs.writeFileSync(
@@ -23,6 +66,11 @@ function writeModelsJson(agentDir: string, modelId: string): void {
 }
 
 describe("discoverModels", () => {
+  beforeEach(() => {
+    providerRuntimeMocks.applyProviderResolvedTransportWithPlugin.mockClear();
+    providerRuntimeMocks.normalizeProviderResolvedModelWithPlugin.mockClear();
+  });
+
   it("clears cached find results when the agent model registry refreshes", () => {
     const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-agent-models-"));
     writeModelsJson(agentDir, "old-model");
@@ -36,6 +84,7 @@ describe("discoverModels", () => {
 
     expect(registry.getAll().some((model) => model.id === "new-model")).toBe(true);
     expect(registry.find("custom", "new-model")?.id).toBe("new-model");
+    expect(providerRuntimeMocks.normalizeProviderResolvedModelWithPlugin).not.toHaveBeenCalled();
   });
 
   it("preserves authored OpenAI Completions while normalizing models.json entries", () => {
@@ -80,5 +129,17 @@ describe("discoverModels", () => {
     const registry = discoverModels(authStorage, agentDir, { config });
 
     expect(registry.find("openai", "gpt-5.5")?.api).toBe("openai-completions");
+    expect(providerRuntimeMocks.normalizeProviderResolvedModelWithPlugin).toHaveBeenCalledWith(
+      expect.objectContaining({
+        config,
+        context: expect.objectContaining({
+          model: expect.objectContaining({
+            api: "openai-completions",
+          }),
+        }),
+        modelId: "gpt-5.5",
+        provider: "openai",
+      }),
+    );
   });
 });
