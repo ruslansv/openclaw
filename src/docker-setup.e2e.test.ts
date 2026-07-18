@@ -1088,9 +1088,11 @@ describe("scripts/docker/setup.sh", () => {
     ).toHaveLength(3);
   });
 
-  it("allowlists Docker runtime env keys instead of injecting the full project .env", async () => {
+  it("passes project env values while overriding host-only runtime paths", async () => {
     const compose = await readFile(join(repoRoot, "docker-compose.yml"), "utf8");
-    expect(compose).not.toContain("env_file:");
+    expect(compose.match(/env_file:/g)).toHaveLength(2);
+    expect(compose.match(/- path: \.env/g)).toHaveLength(2);
+    expect(compose.match(/required: false/g)).toHaveLength(2);
     expect(compose).not.toContain("/app/.env:ro");
   });
 

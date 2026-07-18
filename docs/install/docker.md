@@ -549,11 +549,13 @@ The auth-profile secret directory stores the local encryption key for OAuth-back
 
 Installed downloadable plugins store package state under the mounted OpenClaw home, so install records and package roots survive container replacement; gateway startup does not regenerate bundled-plugin dependency trees.
 
-Compose reads the project-root Docker `.env` for variable interpolation, but
-the containers only receive the allowlisted environment keys declared in
-`docker-compose.yml`. Put extra OpenClaw runtime env vars in
-`$OPENCLAW_CONFIG_DIR/.env`; that file lives inside the mounted config
-directory and is preserved across container replacement.
+Compose reads the project-root Docker `.env` for interpolation and passes its
+values to the gateway and CLI containers. Explicit Compose values override the
+host storage paths with canonical container paths, so a macOS
+`OPENCLAW_CONFIG_DIR` or `OPENCLAW_WORKSPACE_DIR` cannot leak into Linux
+runtime path resolution. This also keeps plugin-specific runtime environment
+variables available. `$OPENCLAW_CONFIG_DIR/.env` remains a persistent option
+for OpenClaw-loaded runtime secrets inside the mounted config directory.
 
 For full persistence details on VM deployments, see
 [Docker VM Runtime - What persists where](/install/docker-vm-runtime#what-persists-where).
@@ -763,7 +765,8 @@ Default restore behavior:
 - snapshots current config, workspace, and auth-profile secret dirs as
   `.pre-restore-<timestamp>`
 - restores config, workspace, and auth-profile secret state from backup
-- writes the backup env file as `.env.from-backup` for review
+- rewrites storage path keys for the target directories
+- writes the rewritten backup env file as `.env.from-backup` for review
 
 To overwrite `.env` directly:
 
@@ -772,6 +775,11 @@ scripts/migrate/restore-openclaw.sh \
   --archive /path/to/openclaw-backup-<timestamp>.tar.gz \
   --apply-env
 ```
+
+`--apply-env` preserves the current file as `.env.pre-restore-<timestamp>`,
+then applies the backup values with `OPENCLAW_CONFIG_DIR`,
+`OPENCLAW_WORKSPACE_DIR`, and `OPENCLAW_AUTH_PROFILE_SECRET_DIR` rewritten for
+the target host.
 
 ### 4) Rebuild and validate on the target architecture
 
@@ -786,7 +794,14 @@ docker compose run --rm openclaw-cli channels status --probe
 ### Architecture migration note
 
 Do not carry over architecture-specific binary caches from x86 to arm hosts.
-Rebuild containers and reinstall native toolchains on the target host.
+When the helper detects an architecture change, it keeps architecture-sensitive plugin roots
+out of the active restore and preserves them in a sibling
+`.source-arch-plugin-state-<arch>-<timestamp>` directory. Rebuild the image,
+then follow the printed `plugins update --all`, `doctor --fix`, and Gateway
+restart steps so tracked downloadable plugins are installed for the target
+architecture. Local or path plugins are preserved in that migration artifact;
+copy their source back only after rebuilding their dependencies on the target
+host. Bundled plugins are rebuilt with the Docker image.
 
 ### Running on a VPS?
 

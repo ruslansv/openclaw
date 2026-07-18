@@ -52,12 +52,14 @@ services:
       context: .
       args:
         OPENCLAW_EXTENSIONS: ${OPENCLAW_EXTENSIONS:-}
+    env_file:
+      - path: .env
+        required: false
     # Keep the runtime on the image default `node` user so `docker compose exec`
     # against the running gateway does not create root-owned config/state files.
     # Rely on the image's default entrypoint so pinned older tags still start.
     environment:
-      # Compose reads the project .env for interpolation, but only this
-      # allowlist is injected so host-only overrides do not leak into Docker.
+      # Explicit values below override host-only path values imported from .env.
       HOME: /home/node
       OPENCLAW_HOME: /home/node
       TERM: xterm-256color
@@ -147,14 +149,16 @@ services:
   openclaw-cli:
     image: ${OPENCLAW_IMAGE:-openclaw:local}
     network_mode: "service:openclaw-gateway"
+    env_file:
+      - path: .env
+        required: false
     cap_drop:
       - NET_RAW
       - NET_ADMIN
     security_opt:
       - no-new-privileges:true
     environment:
-      # Keep the CLI env surface aligned with the gateway allowlist instead of
-      # passing every project-root .env key into the container.
+      # Explicit values below override host-only path values imported from .env.
       HOME: /home/node
       OPENCLAW_HOME: /home/node
       TERM: xterm-256color

@@ -1,7 +1,7 @@
 // Docker migration helper tests cover host-state backup and restore invariants.
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -28,6 +28,10 @@ function runScript(script: string, args: string[], extraEnv: NodeJS.ProcessEnv =
 async function writeFixtureFile(filePath: string, value: string) {
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, value);
+}
+
+function dotenvLiteral(value: string) {
+  return `'${value.replaceAll("'", "\\'")}'`;
 }
 
 async function writeDockerStub(root: string, repoRoot: string) {
@@ -69,11 +73,24 @@ describe("openclaw Docker migration helpers", () => {
     const configDir = path.join(root, "config");
     const workspaceDir = path.join(root, "workspace");
     const authProfileSecretDir = path.join(root, "auth-profile-secrets");
+    const restoredConfigDir = path.join(root, "restored-$tenant's-config");
+    const restoredWorkspaceDir = path.join(root, "restored-$tenant's-workspace");
+    const restoredAuthProfileSecretDir = path.join(root, "restored-$tenant's-auth-secrets");
     const backupDir = path.join(root, "backups");
     await mkdir(repoRoot, { recursive: true });
     const { binDir, composePath, dockerLog } = await writeDockerStub(root, repoRoot);
     await writeFixtureFile(path.join(configDir, "openclaw.json"), '{"ok":true}\n');
+    await writeFixtureFile(
+      path.join(configDir, "extensions", "tracked-plugin", "package.json"),
+      '{"name":"tracked-plugin"}\n',
+    );
+    await writeFixtureFile(path.join(configDir, "npm", "projects", "native.bin"), "source\n");
+    await writeFixtureFile(path.join(configDir, "git", "tracked-plugin", "native.bin"), "source\n");
     await writeFixtureFile(path.join(workspaceDir, "scripts", "digest.js"), "console.log('ok');\n");
+    await writeFixtureFile(
+      path.join(workspaceDir, ".openclaw", "extensions", "local-plugin", "package.json"),
+      '{"name":"local-plugin"}\n',
+    );
     await writeFixtureFile(
       path.join(authProfileSecretDir, "key.json"),
       '{"fixture":"test-value"}\n',
@@ -113,41 +130,81 @@ describe("openclaw Docker migration helpers", () => {
     expect(statSync(archivePath).mode & 0o077).toBe(0);
     expect(statSync(`${archivePath}.sha256`).mode & 0o077).toBe(0);
 
-    await rm(configDir, { recursive: true, force: true });
-    await rm(workspaceDir, { recursive: true, force: true });
-    await rm(authProfileSecretDir, { recursive: true, force: true });
-    await writeFixtureFile(path.join(configDir, "stale.json"), "{}\n");
-    await writeFixtureFile(path.join(workspaceDir, "stale.txt"), "old\n");
-    await writeFixtureFile(path.join(authProfileSecretDir, "stale.key"), "old\n");
+    await writeFixtureFile(path.join(restoredConfigDir, "stale.json"), "{}\n");
+    await writeFixtureFile(path.join(restoredWorkspaceDir, "stale.txt"), "old\n");
+    await writeFixtureFile(path.join(restoredAuthProfileSecretDir, "stale.key"), "old\n");
     writeFileSync(path.join(repoRoot, ".env"), "OPENCLAW_GATEWAY_TOKEN=old\n");
+    const unameStub = path.join(binDir, "uname");
+    await writeFile(unameStub, "#!/usr/bin/env sh\nprintf '%s\\n' test-target-arch\n");
+    await chmod(unameStub, 0o755);
 
-    const restore = runScript(RESTORE_SCRIPT, [
-      "--repo-root",
-      repoRoot,
-      "--archive",
-      archivePath,
-      "--config-dir",
-      configDir,
-      "--workspace-dir",
-      workspaceDir,
-      "--auth-profile-secret-dir",
-      authProfileSecretDir,
-      "--no-stop",
-      "--apply-env",
-    ]);
+    const restore = runScript(
+      RESTORE_SCRIPT,
+      [
+        "--repo-root",
+        repoRoot,
+        "--archive",
+        archivePath,
+        "--config-dir",
+        restoredConfigDir,
+        "--workspace-dir",
+        restoredWorkspaceDir,
+        "--auth-profile-secret-dir",
+        restoredAuthProfileSecretDir,
+        "--no-stop",
+        "--apply-env",
+      ],
+      { PATH: `${binDir}:${process.env.PATH ?? ""}` },
+    );
     expect(restore.stderr).toBe("");
     expect(restore.status).toBe(0);
 
-    expect(readFileSync(path.join(configDir, "openclaw.json"), "utf8")).toBe('{"ok":true}\n');
-    expect(readFileSync(path.join(workspaceDir, "scripts", "digest.js"), "utf8")).toBe(
+    expect(readFileSync(path.join(restoredConfigDir, "openclaw.json"), "utf8")).toBe(
+      '{"ok":true}\n',
+    );
+    expect(readFileSync(path.join(restoredWorkspaceDir, "scripts", "digest.js"), "utf8")).toBe(
       "console.log('ok');\n",
     );
-    expect(readFileSync(path.join(authProfileSecretDir, "key.json"), "utf8")).toBe(
+    expect(readFileSync(path.join(restoredAuthProfileSecretDir, "key.json"), "utf8")).toBe(
       '{"fixture":"test-value"}\n',
     );
-    expect(readFileSync(path.join(repoRoot, ".env"), "utf8")).toContain(
-      "OPENCLAW_GATEWAY_TOKEN=test-token-placeholder",
+    const restoredEnv = readFileSync(path.join(repoRoot, ".env"), "utf8").split("\n");
+    expect(restoredEnv).toContain("OPENCLAW_GATEWAY_TOKEN=test-token-placeholder");
+    expect(restoredEnv).toContain(`OPENCLAW_CONFIG_DIR=${dotenvLiteral(restoredConfigDir)}`);
+    expect(restoredEnv).toContain(`OPENCLAW_WORKSPACE_DIR=${dotenvLiteral(restoredWorkspaceDir)}`);
+    expect(restoredEnv).toContain(
+      `OPENCLAW_AUTH_PROFILE_SECRET_DIR=${dotenvLiteral(restoredAuthProfileSecretDir)}`,
     );
+    expect(restoredEnv).not.toContain(`OPENCLAW_CONFIG_DIR=${configDir}`);
+    expect(existsSync(path.join(restoredConfigDir, "extensions"))).toBe(false);
+    expect(existsSync(path.join(restoredConfigDir, "npm"))).toBe(false);
+    expect(existsSync(path.join(restoredConfigDir, "git"))).toBe(false);
+    expect(existsSync(path.join(restoredWorkspaceDir, ".openclaw", "extensions"))).toBe(false);
+    const pluginStateName = readdirSync(root).find((name) =>
+      name.startsWith("restored-$tenant's-config.source-arch-plugin-state-"),
+    );
+    expect(pluginStateName).toBeDefined();
+    const pluginStateDir = path.join(root, pluginStateName ?? "missing");
+    expect(
+      readFileSync(
+        path.join(pluginStateDir, "config", "extensions", "tracked-plugin", "package.json"),
+        "utf8",
+      ),
+    ).toBe('{"name":"tracked-plugin"}\n');
+    expect(
+      readFileSync(
+        path.join(
+          pluginStateDir,
+          "workspace",
+          ".openclaw",
+          "extensions",
+          "local-plugin",
+          "package.json",
+        ),
+        "utf8",
+      ),
+    ).toBe('{"name":"local-plugin"}\n');
+    expect(restore.stdout).toContain("plugins update --all");
     expect(statSync(path.join(repoRoot, ".env")).mode & 0o077).toBe(0);
   });
 

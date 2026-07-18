@@ -86,6 +86,7 @@ require_cmd rsync
 require_cmd shasum
 require_cmd python3
 require_cmd date
+require_cmd uname
 
 ARCHIVE_PATH="$(resolve_abs_path "$ARCHIVE_PATH")"
 REPO_ROOT="$(resolve_abs_path "$REPO_ROOT")"
@@ -131,6 +132,13 @@ CONFIG_DIR="$(resolve_abs_path "$CONFIG_DIR")"
 WORKSPACE_DIR="$(resolve_abs_path "$WORKSPACE_DIR")"
 AUTH_PROFILE_SECRET_DIR="$(resolve_abs_path "$AUTH_PROFILE_SECRET_DIR")"
 
+source_arch="$(grep -E '^source_arch=' "$tmpdir/meta/backup.env" | cut -d= -f2- || true)"
+target_arch="$(uname -m)"
+arch_mismatch=0
+if [[ -n "$source_arch" && "$source_arch" != "$target_arch" ]]; then
+  arch_mismatch=1
+fi
+
 if [[ $STOP_FIRST -eq 1 ]] && command -v docker >/dev/null 2>&1; then
   compose_file="$REPO_ROOT/docker-compose.yml"
   [[ -f "$compose_file" ]] || fail "Compose file not found at $compose_file (use --no-stop to skip stopping the gateway)."
@@ -156,15 +164,85 @@ fi
 mkdir -p "$CONFIG_DIR" "$WORKSPACE_DIR" "$AUTH_PROFILE_SECRET_DIR"
 
 echo "==> Restoring config"
-rsync -a "$tmpdir/payload/config/" "$CONFIG_DIR/"
+config_rsync_args=(-a)
+workspace_rsync_args=(-a)
+plugin_payload_backup=""
+if [[ $arch_mismatch -eq 1 ]]; then
+  # The destination trees were moved above, so these exclusions cannot leave
+  # stale source-architecture plugin roots active after the restore.
+  config_rsync_args+=(--exclude=/extensions/ --exclude=/git/ --exclude=/npm/)
+  workspace_rsync_args+=(--exclude=/.openclaw/extensions/)
+
+  source_arch_label="${source_arch//[^A-Za-z0-9._-]/_}"
+  plugin_payload_backup="${CONFIG_DIR}.source-arch-plugin-state-${source_arch_label}-${timestamp}"
+  mkdir -p "$plugin_payload_backup/config" "$plugin_payload_backup/workspace/.openclaw"
+  for relative_dir in extensions git npm; do
+    if [[ -d "$tmpdir/payload/config/$relative_dir" ]]; then
+      rsync -a \
+        "$tmpdir/payload/config/$relative_dir/" \
+        "$plugin_payload_backup/config/$relative_dir/"
+    fi
+  done
+  if [[ -d "$tmpdir/payload/workspace/.openclaw/extensions" ]]; then
+    rsync -a \
+      "$tmpdir/payload/workspace/.openclaw/extensions/" \
+      "$plugin_payload_backup/workspace/.openclaw/extensions/"
+  fi
+fi
+rsync "${config_rsync_args[@]}" "$tmpdir/payload/config/" "$CONFIG_DIR/"
 
 echo "==> Restoring workspace"
-rsync -a "$tmpdir/payload/workspace/" "$WORKSPACE_DIR/"
+rsync "${workspace_rsync_args[@]}" "$tmpdir/payload/workspace/" "$WORKSPACE_DIR/"
 
 if [[ -d "$tmpdir/payload/auth-profile-secrets" ]]; then
   echo "==> Restoring auth-profile secret directory"
   rsync -a "$tmpdir/payload/auth-profile-secrets/" "$AUTH_PROFILE_SECRET_DIR/"
 fi
+
+write_restored_env() {
+  local source_file="$1"
+  local destination_file="$2"
+  python3 - \
+    "$source_file" \
+    "$destination_file" \
+    "$CONFIG_DIR" \
+    "$WORKSPACE_DIR" \
+    "$AUTH_PROFILE_SECRET_DIR" <<'PY'
+import re
+import sys
+
+source_path, destination_path, config_dir, workspace_dir, auth_dir = sys.argv[1:]
+replacements = {
+    "OPENCLAW_CONFIG_DIR": config_dir,
+    "OPENCLAW_WORKSPACE_DIR": workspace_dir,
+    "OPENCLAW_AUTH_PROFILE_SECRET_DIR": auth_dir,
+}
+assignment = re.compile(r"^(\s*(?:export\s+)?)([A-Za-z_][A-Za-z0-9_]*)=")
+seen = set()
+output = []
+
+
+def dotenv_literal(value):
+    return "'" + value.replace("'", "\\'") + "'"
+
+with open(source_path, encoding="utf-8") as source:
+    for raw_line in source.read().splitlines():
+        match = assignment.match(raw_line)
+        if match and match.group(2) in replacements:
+            key = match.group(2)
+            output.append(f"{match.group(1)}{key}={dotenv_literal(replacements[key])}")
+            seen.add(key)
+        else:
+            output.append(raw_line)
+
+for key, value in replacements.items():
+    if key not in seen:
+        output.append(f"{key}={dotenv_literal(value)}")
+
+with open(destination_path, "w", encoding="utf-8") as destination:
+    destination.write("\n".join(output) + "\n")
+PY
+}
 
 if [[ -f "$tmpdir/payload/repo/.env" ]]; then
   if [[ $APPLY_ENV -eq 1 ]]; then
@@ -172,27 +250,36 @@ if [[ -f "$tmpdir/payload/repo/.env" ]]; then
     if [[ -f "$ENV_FILE" ]]; then
       cp "$ENV_FILE" "${ENV_FILE}.pre-restore-${timestamp}"
     fi
-    cp "$tmpdir/payload/repo/.env" "$ENV_FILE"
+    write_restored_env "$tmpdir/payload/repo/.env" "$ENV_FILE"
     chmod 600 "$ENV_FILE"
     echo "==> Applied backed up env file to $ENV_FILE"
   else
-    cp "$tmpdir/payload/repo/.env" "${ENV_FILE}.from-backup"
+    write_restored_env "$tmpdir/payload/repo/.env" "${ENV_FILE}.from-backup"
     chmod 600 "${ENV_FILE}.from-backup"
     echo "==> Wrote env candidate to ${ENV_FILE}.from-backup"
   fi
 fi
 
-source_arch="$(grep -E '^source_arch=' "$tmpdir/meta/backup.env" | cut -d= -f2- || true)"
-target_arch="$(uname -m)"
-if [[ -n "$source_arch" && "$source_arch" != "$target_arch" ]]; then
+if [[ $arch_mismatch -eq 1 ]]; then
   echo
   echo "NOTE: source arch (${source_arch}) differs from target arch (${target_arch})."
-  echo "Rebuild the Docker image on this host; do not reuse old binary caches or volumes."
+  echo "Architecture-specific plugin state was not activated on this host."
+  echo "Preserved source plugin state: $plugin_payload_backup"
+  echo "Rebuild the image, reinstall tracked plugins, and rebuild local plugin dependencies."
 fi
 
 echo
 echo "Restore completed."
 echo "Next steps:"
 echo "  1) docker compose -f \"$REPO_ROOT/docker-compose.yml\" up -d --build --force-recreate openclaw-gateway"
-echo "  2) docker compose -f \"$REPO_ROOT/docker-compose.yml\" run --rm openclaw-cli health"
-echo "  3) docker compose -f \"$REPO_ROOT/docker-compose.yml\" run --rm openclaw-cli channels status --probe"
+if [[ $arch_mismatch -eq 1 ]]; then
+  echo "  2) docker compose -f \"$REPO_ROOT/docker-compose.yml\" run --rm openclaw-cli plugins update --all"
+  echo "  3) docker compose -f \"$REPO_ROOT/docker-compose.yml\" run --rm openclaw-cli doctor --fix"
+  echo "  4) Reinstall/rebuild any local or path plugins preserved under: $plugin_payload_backup"
+  echo "  5) docker compose -f \"$REPO_ROOT/docker-compose.yml\" restart openclaw-gateway"
+  echo "  6) docker compose -f \"$REPO_ROOT/docker-compose.yml\" run --rm openclaw-cli health"
+  echo "  7) docker compose -f \"$REPO_ROOT/docker-compose.yml\" run --rm openclaw-cli channels status --probe"
+else
+  echo "  2) docker compose -f \"$REPO_ROOT/docker-compose.yml\" run --rm openclaw-cli health"
+  echo "  3) docker compose -f \"$REPO_ROOT/docker-compose.yml\" run --rm openclaw-cli channels status --probe"
+fi
