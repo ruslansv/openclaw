@@ -48,14 +48,17 @@ describe("openclaw Docker migration helpers", () => {
     await mkdir(repoRoot, { recursive: true });
     await writeFixtureFile(path.join(configDir, "openclaw.json"), '{"ok":true}\n');
     await writeFixtureFile(path.join(workspaceDir, "scripts", "digest.js"), "console.log('ok');\n");
-    await writeFixtureFile(path.join(authProfileSecretDir, "key.json"), '{"secret":true}\n');
+    await writeFixtureFile(
+      path.join(authProfileSecretDir, "key.json"),
+      '{"fixture":"test-value"}\n',
+    );
     await writeFile(
       path.join(repoRoot, ".env"),
       [
         `OPENCLAW_CONFIG_DIR=${configDir}`,
         `OPENCLAW_WORKSPACE_DIR=${workspaceDir}`,
         `OPENCLAW_AUTH_PROFILE_SECRET_DIR=${authProfileSecretDir}`,
-        "OPENCLAW_GATEWAY_TOKEN=redacted-test-token",
+        "OPENCLAW_GATEWAY_TOKEN=test-token",
         "",
       ].join("\n"),
     );
@@ -107,10 +110,10 @@ describe("openclaw Docker migration helpers", () => {
       "console.log('ok');\n",
     );
     expect(readFileSync(path.join(authProfileSecretDir, "key.json"), "utf8")).toBe(
-      '{"secret":true}\n',
+      '{"fixture":"test-value"}\n',
     );
     expect(readFileSync(path.join(repoRoot, ".env"), "utf8")).toContain(
-      "OPENCLAW_GATEWAY_TOKEN=redacted-test-token",
+      "OPENCLAW_GATEWAY_TOKEN=test-token",
     );
     expect(statSync(path.join(repoRoot, ".env")).mode & 0o077).toBe(0);
   });
