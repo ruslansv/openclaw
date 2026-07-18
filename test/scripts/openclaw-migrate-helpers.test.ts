@@ -58,7 +58,7 @@ describe("openclaw Docker migration helpers", () => {
         `OPENCLAW_CONFIG_DIR=${configDir}`,
         `OPENCLAW_WORKSPACE_DIR=${workspaceDir}`,
         `OPENCLAW_AUTH_PROFILE_SECRET_DIR=${authProfileSecretDir}`,
-        "OPENCLAW_GATEWAY_TOKEN=test-token",
+        "OPENCLAW_GATEWAY_TOKEN=test-token-placeholder",
         "",
       ].join("\n"),
     );
@@ -113,7 +113,7 @@ describe("openclaw Docker migration helpers", () => {
       '{"fixture":"test-value"}\n',
     );
     expect(readFileSync(path.join(repoRoot, ".env"), "utf8")).toContain(
-      "OPENCLAW_GATEWAY_TOKEN=test-token",
+      "OPENCLAW_GATEWAY_TOKEN=test-token-placeholder",
     );
     expect(statSync(path.join(repoRoot, ".env")).mode & 0o077).toBe(0);
   });
