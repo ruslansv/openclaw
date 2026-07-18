@@ -101,6 +101,15 @@ describe("Dockerfile", () => {
     expect(dockerfile).toContain(
       "ENV OPENCLAW_PLAYWRIGHT_BROWSERS_PATH=/opt/openclaw/ms-playwright",
     );
+    const browserDirectoryIndex = dockerfile.indexOf(
+      'install -d -m 0755 -o node -g node "$OPENCLAW_PLAYWRIGHT_BROWSERS_PATH"',
+    );
+    const browserConditionIndex = dockerfile.indexOf(
+      'if [ -n "$OPENCLAW_INSTALL_BROWSER" ]',
+      browserArgIndex,
+    );
+    expect(browserDirectoryIndex).toBeGreaterThan(browserArgIndex);
+    expect(browserDirectoryIndex).toBeLessThan(browserConditionIndex);
     expect(dockerfile).toContain('PLAYWRIGHT_BROWSERS_PATH="$OPENCLAW_PLAYWRIGHT_BROWSERS_PATH"');
     expect(dockerfile).toContain(
       "node /app/node_modules/playwright-core/cli.js install --with-deps chromium",
@@ -546,7 +555,13 @@ describe("Dockerfile", () => {
       "RUN for dir in /app/${OPENCLAW_BUNDLED_PLUGIN_DIR} /app/.agent /app/.agents; do \\",
     );
     expect(dockerfile).toContain('find "$dir" -type d -exec chmod 755 {} +');
-    expect(dockerfile).toContain('find "$dir" -type f -exec chmod 644 {} +');
+    expect(
+      dockerfile.match(/find "\$dir" -type f -perm \/111 -exec chmod 755 \{\} \+/g),
+    ).toHaveLength(2);
+    expect(
+      dockerfile.match(/find "\$dir" -type f ! -perm \/111 -exec chmod 644 \{\} \+/g),
+    ).toHaveLength(2);
+    expect(dockerfile).not.toContain('find "$dir" -type f -exec chmod 644 {} +');
   });
 
   it("Docker GPG fingerprint awk uses correct quoting for OPENCLAW_SANDBOX=1 build", async () => {

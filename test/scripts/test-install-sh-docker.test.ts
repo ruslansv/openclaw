@@ -877,7 +877,9 @@ printf 'status=%s\\n' "$status"
       "ENV OPENCLAW_PLAYWRIGHT_BROWSERS_PATH=/opt/openclaw/ms-playwright",
     );
     expect(dockerfile).toContain("ENV PLAYWRIGHT_BROWSERS_PATH=/opt/openclaw/ms-playwright");
-    expect(dockerfile).toContain('mkdir -p "$OPENCLAW_PLAYWRIGHT_BROWSERS_PATH"');
+    expect(dockerfile).toContain(
+      'install -d -m 0755 -o node -g node "$OPENCLAW_PLAYWRIGHT_BROWSERS_PATH"',
+    );
     expect(dockerfile).toContain('PLAYWRIGHT_BROWSERS_PATH="$OPENCLAW_PLAYWRIGHT_BROWSERS_PATH"');
     expect(dockerfile).toContain(
       "node /app/node_modules/playwright-core/cli.js install --with-deps chromium",

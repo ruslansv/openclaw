@@ -134,7 +134,8 @@ COPY . .
 RUN for dir in /app/${OPENCLAW_BUNDLED_PLUGIN_DIR} /app/.agent /app/.agents; do \
       if [ -d "$dir" ]; then \
         find "$dir" -type d -exec chmod 755 {} +; \
-        find "$dir" -type f -exec chmod 644 {} +; \
+        find "$dir" -type f -perm /111 -exec chmod 755 {} +; \
+        find "$dir" -type f ! -perm /111 -exec chmod 644 {} +; \
       fi; \
     done
 
@@ -320,8 +321,8 @@ ENV OPENCLAW_PLAYWRIGHT_BROWSERS_PATH=/opt/openclaw/ms-playwright
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/openclaw/ms-playwright
 RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,id=openclaw-bookworm-apt-lists,target=/var/lib/apt,sharing=locked \
+    install -d -m 0755 -o node -g node "$OPENCLAW_PLAYWRIGHT_BROWSERS_PATH" && \
     if [ -n "$OPENCLAW_INSTALL_BROWSER" ]; then \
-      mkdir -p "$OPENCLAW_PLAYWRIGHT_BROWSERS_PATH" && \
       PLAYWRIGHT_BROWSERS_PATH="$OPENCLAW_PLAYWRIGHT_BROWSERS_PATH" \
       node /app/node_modules/playwright-core/cli.js install --with-deps chromium && \
       chmod -R a+rX "$OPENCLAW_PLAYWRIGHT_BROWSERS_PATH" && \
@@ -447,7 +448,8 @@ COPY --from=build --chown=node:node /app/scripts/docker ./scripts/docker
 RUN for dir in /app/extensions /app/.agent /app/.agents; do \
       if [ -d "$dir" ]; then \
         find "$dir" -type d -exec chmod 755 {} +; \
-        find "$dir" -type f -exec chmod 644 {} +; \
+        find "$dir" -type f -perm /111 -exec chmod 755 {} +; \
+        find "$dir" -type f ! -perm /111 -exec chmod 644 {} +; \
       fi; \
     done
 RUN chmod +x scripts/docker/gateway-entrypoint.sh scripts/docker/playwright-chromium.sh
