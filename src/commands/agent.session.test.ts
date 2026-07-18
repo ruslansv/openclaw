@@ -1,12 +1,15 @@
 // Agent session command tests cover session resolution, agent scoping, and temp-home session stores.
-import fs from "node:fs";
 import path from "node:path";
 import { withTempHome as withTempHomeBase } from "openclaw/plugin-sdk/test-env";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveAgentDir, resolveSessionAgentId } from "../agents/agent-scope.js";
 import { updateSessionStoreAfterAgentRun } from "../agents/command/session-store.js";
 import { resolveSession } from "../agents/command/session.js";
-import { loadSessionEntry, replaceSessionEntry } from "../config/sessions/session-accessor.js";
+import {
+  appendTranscriptEvent,
+  loadSessionEntry,
+  replaceSessionEntry,
+} from "../config/sessions/session-accessor.js";
 import { clearSessionStoreCacheForTest } from "../config/sessions/store.js";
 import { resolveSessionTranscriptFile } from "../config/sessions/transcript.js";
 import type { SessionEntry } from "../config/sessions/types.js";
@@ -71,6 +74,17 @@ async function withCrossAgentResumeFixture(
 
 beforeEach(() => {
   clearSessionStoreCacheForTest();
+  // Freshness fixtures seed times relative to Date.now(); near the 04:00
+  // local daily-reset boundary the seeded window straddles it and reuse
+  // scenarios flip to new sessions. Pin local noon so no timezone can hit it.
+  vi.useFakeTimers({ toFake: ["Date"] });
+  const localNoon = new Date();
+  localNoon.setHours(12, 0, 0, 0);
+  vi.setSystemTime(localNoon);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("agent session resolution", () => {
@@ -197,13 +211,6 @@ describe("agent session resolution", () => {
         const sessionFile = path.join(home, `session-${scenario.label.replaceAll(" ", "-")}.jsonl`);
         const sessionId = `stale-terminal-${scenario.label.replaceAll(" ", "-")}`;
         const registryUpdatedAt = Date.now() - 10_000;
-        fs.mkdirSync(path.dirname(sessionFile), { recursive: true });
-        fs.writeFileSync(sessionFile, JSON.stringify({ type: "session", id: sessionId }) + "\n");
-        fs.utimesSync(
-          sessionFile,
-          (registryUpdatedAt + 5_000) / 1000,
-          (registryUpdatedAt + 5_000) / 1000,
-        );
         await writeSessionStoreSeed(store, {
           [scenario.sessionKey]: {
             sessionId,
@@ -225,6 +232,15 @@ describe("agent session resolution", () => {
             claudeCliSessionId: "old-claude-cli-session",
           },
         });
+        await appendTranscriptEvent(
+          {
+            agentId: "main",
+            sessionId,
+            sessionKey: scenario.sessionKey,
+            storePath: store,
+          },
+          { type: "custom", timestamp: "1970-01-01T00:00:00.001Z" },
+        );
         const cfg = mockConfig(home, store);
         cfg.session = { ...cfg.session, mainKey: scenario.mainKey };
 
@@ -302,12 +318,6 @@ describe("agent session resolution", () => {
       const sessionFile = path.join(home, "explicit-terminal-main.jsonl");
       const sessionId = "explicit-terminal-main";
       const registryUpdatedAt = Date.now() - 10_000;
-      fs.writeFileSync(sessionFile, JSON.stringify({ type: "session", id: sessionId }) + "\n");
-      fs.utimesSync(
-        sessionFile,
-        (registryUpdatedAt + 5_000) / 1000,
-        (registryUpdatedAt + 5_000) / 1000,
-      );
       await writeSessionStoreSeed(store, {
         "agent:main:main": {
           sessionId,
@@ -319,6 +329,15 @@ describe("agent session resolution", () => {
           runtimeMs: 900,
         },
       });
+      await appendTranscriptEvent(
+        {
+          agentId: "main",
+          sessionId,
+          sessionKey: "agent:main:main",
+          storePath: store,
+        },
+        { type: "custom", timestamp: "1970-01-01T00:00:00.001Z" },
+      );
       const cfg = mockConfig(home, store);
 
       const resolution = resolveSession({ cfg, sessionId });

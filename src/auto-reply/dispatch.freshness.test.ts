@@ -6,6 +6,9 @@ import { resetGlobalHookRunner } from "../plugins/hook-runner-global.js";
 import { getReplyPayloadMetadata } from "./reply-payload.js";
 import type { ReplyDispatchBeforeDeliver } from "./reply/reply-dispatcher.js";
 import type { ReplyDispatchBeforeDeliverOptions } from "./reply/reply-dispatcher.types.js";
+import { createReplyOperation } from "./reply/reply-run-registry.js";
+import { testing as replyRunTesting } from "./reply/reply-run-registry.test-support.js";
+import { admitReplyTurn } from "./reply/reply-turn-admission.js";
 import { buildTestCtx } from "./reply/test-ctx.js";
 import type { FinalizedMsgContext, MsgContext } from "./templating.js";
 import type { ReplyPayload } from "./types.js";
@@ -89,11 +92,13 @@ function dispatchWithDeliveries(
 describe("foreground reply freshness", () => {
   beforeEach(() => {
     resetGlobalHookRunner();
+    replyRunTesting.resetReplyRunRegistry();
     hoisted.dispatchReplyFromConfigMock.mockReset();
   });
 
   afterEach(() => {
     resetGlobalHookRunner();
+    replyRunTesting.resetReplyRunRegistry();
   });
 
   it("suppresses an older foreground final after a newer inbound event starts for the same session target", async () => {
@@ -318,7 +323,13 @@ describe("foreground reply freshness", () => {
     const olderStarted = createDeferred<void>();
     const newerStarted = createDeferred<void>();
     const releaseOlderFinal = createDeferred<void>();
-    const olderDelivered = createDeferred<void>();
+    const sessionKey = "agent:main:whatsapp:direct:+1000";
+    const activeOperation = createReplyOperation({
+      sessionKey,
+      sessionId: "older-session",
+      resetTriggered: false,
+    });
+    activeOperation.setPhase("running");
 
     hoisted.dispatchReplyFromConfigMock.mockImplementation(
       async (params: DispatchReplyFromConfigParams) => {
@@ -330,12 +341,15 @@ describe("foreground reply freshness", () => {
         }
         if (params.ctx.MessageSid === "new-message") {
           newerStarted.resolve();
-          // Same-session follow-up admission waits for the owning final delivery.
-          params.replyOptions?.onFollowupAdmissionWaitChange?.(true);
-          try {
-            await olderDelivered.promise;
-          } finally {
-            params.replyOptions?.onFollowupAdmissionWaitChange?.(false);
+          const admission = await admitReplyTurn({
+            sessionKey,
+            sessionId: "newer-session",
+            kind: "visible",
+            resetTriggered: false,
+            onReplyAdmissionWaitChange: params.replyOptions?.onReplyAdmissionWaitChange,
+          });
+          if (admission.status === "owned") {
+            admission.operation.complete();
           }
           return {
             queuedFinal: false,
@@ -352,7 +366,7 @@ describe("foreground reply freshness", () => {
       {
         deliver: async (payload, info) => {
           deliveries.push({ kind: info.kind, text: payload.text });
-          olderDelivered.resolve();
+          activeOperation.complete();
         },
       },
     );

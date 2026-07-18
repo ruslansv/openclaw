@@ -938,22 +938,31 @@ echo "==> Fixing data-directory permissions"
 # Use -xdev to restrict chown to the config-dir mount only — without it,
 # the recursive chown would cross into the workspace bind mount and rewrite
 # ownership of all user project files on Linux hosts.
+# Run a no-dereference chown from each entry's directory. This keeps ownership
+# repair for sockets/FIFOs while preventing a swapped symlink leaf from
+# redirecting the root operation outside the mounted tree.
 # After fixing the config dir, only the OpenClaw metadata subdirectory
 # (.openclaw/) inside the workspace gets chowned, not the user's project files.
 run_prestart_gateway --user root --entrypoint sh openclaw-gateway -c \
   'set -eu; \
-   mkdir -p /home/node/.openclaw /home/node/.openclaw/workspace /home/node/.config/openclaw \
-      /home/node/.cache /home/node/.npm \
-      "${PNPM_HOME:-/home/node/.local/share/pnpm}" \
-      "${NPM_CONFIG_PREFIX:-/home/node/.npm-global}/bin" \
-      "${GOPATH:-/home/node/go}/bin"; \
-   chown node:node /home/node/.config; \
-   chown -R node:node /home/node/.cache /home/node/.local /home/node/.npm \
-      /home/node/.npm-global /home/node/go; \
-   find /home/node/.openclaw -xdev -exec chown -h node:node {} +; \
-   find /home/node/.config/openclaw -xdev -exec chown -h node:node {} +; \
-   [ -d /home/node/.openclaw/workspace/.openclaw ] && \
-      find /home/node/.openclaw/workspace/.openclaw -xdev -exec chown -h node:node {} + || true'
+   PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; export PATH; \
+   for path in \
+     /home/node/.openclaw /home/node/.openclaw/workspace /home/node/.config /home/node/.config/openclaw \
+     /home/node/.cache /home/node/.npm /home/node/.local /home/node/.local/share \
+     /home/node/.local/share/pnpm /home/node/.npm-global /home/node/.npm-global/bin \
+     /home/node/go /home/node/go/bin; do \
+     if [ -L "$path" ]; then echo "Refusing symlinked runtime directory: $path" >&2; exit 1; fi; \
+     /usr/bin/mkdir -p "$path"; \
+   done; \
+   for root in /home/node/.cache /home/node/.local /home/node/.npm /home/node/.npm-global /home/node/go; do \
+     /usr/bin/find -P "$root" -xdev -execdir /usr/bin/chown -h node:node {} +; \
+   done; \
+   /usr/bin/find -P /home/node/.openclaw -xdev -execdir /usr/bin/chown -h node:node {} +; \
+   /usr/bin/chown -h node:node /home/node/.config; \
+   /usr/bin/find -P /home/node/.config/openclaw -xdev -execdir /usr/bin/chown -h node:node {} +; \
+   if [ -d /home/node/.openclaw/workspace/.openclaw ] && [ ! -L /home/node/.openclaw/workspace/.openclaw ]; then \
+     /usr/bin/find -P /home/node/.openclaw/workspace/.openclaw -xdev -execdir /usr/bin/chown -h node:node {} +; \
+   fi || true'
 
 echo ""
 if [[ -n "$SKIP_ONBOARDING" ]]; then

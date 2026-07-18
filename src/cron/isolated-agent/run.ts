@@ -1,8 +1,9 @@
-/** Orchestrates isolated cron agent turn setup, execution, delivery, and cleanup. */
 import { isDeepStrictEqual } from "node:util";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { hasAcceptedSessionSpawn } from "../../agents/accepted-session-spawn.js";
 import { retireSessionMcpRuntime } from "../../agents/agent-bundle-mcp-tools.js";
 import { hasAnyAuthProfileStoreSource } from "../../agents/auth-profiles/source-check.js";
+import { hasCommittedMessagingToolDeliveryEvidence } from "../../agents/embedded-agent-runner/delivery-evidence.js";
 import { findModelInCatalog } from "../../agents/model-catalog-lookup.js";
 import type { ModelCatalogEntry } from "../../agents/model-catalog.types.js";
 import { listOpenAIAuthProfileProvidersForAgentRuntime } from "../../agents/openai-routing.js";
@@ -10,6 +11,7 @@ import { createAgentRunRestartAbortError } from "../../agents/run-termination.js
 import { expandToolGroups, normalizeToolName } from "../../agents/tool-policy.js";
 import { deriveContextPromptTokens } from "../../agents/usage.js";
 import type { ThinkLevel } from "../../auto-reply/thinking.js";
+import { HEARTBEAT_TOKEN, isSilentReplyPayloadText } from "../../auto-reply/tokens.js";
 import type { CliDeps } from "../../cli/outbound-send-deps.js";
 import { resolveAgentModelPrimaryValue } from "../../config/model-input.js";
 import type { SessionEntry } from "../../config/sessions.js";
@@ -23,6 +25,7 @@ import {
   getAgentEventLifecycleGeneration,
   getAgentRunContext,
   releaseAgentRunContext,
+  withAgentRunLifecycleGeneration,
 } from "../../infra/agent-events.js";
 import { emitTrustedDiagnosticEvent, isDiagnosticsEnabled } from "../../infra/diagnostic-events.js";
 import {
@@ -156,6 +159,9 @@ const runtimePluginsLoader = createLazyImportLoader(
 const codexNativeWebSearchLoader = createLazyImportLoader(
   () => import("../../agents/codex-native-web-search.js"),
 );
+const webToolRuntimeContextLoader = createLazyImportLoader(
+  () => import("../../agents/tools/web-tool-runtime-context.js"),
+);
 const webSearchRuntimeLoader = createLazyImportLoader(() => import("../../web-search/runtime.js"));
 
 async function loadSessionAccessorRuntime() {
@@ -198,6 +204,10 @@ async function loadCodexNativeWebSearch() {
   return await codexNativeWebSearchLoader.load();
 }
 
+async function loadWebToolRuntimeContext() {
+  return await webToolRuntimeContextLoader.load();
+}
+
 async function loadWebSearchRuntime() {
   return await webSearchRuntimeLoader.load();
 }
@@ -235,8 +245,6 @@ async function retireRolledCronSessionMcpRuntime(params: {
     },
   });
 }
-
-export type { RunCronAgentTurnResult } from "./run.types.js";
 
 type CronExecutionRuntime = typeof import("./run-executor.runtime.js");
 type CronExecutionResult = Awaited<ReturnType<CronExecutionRuntime["executeCronRun"]>>;
@@ -392,28 +400,34 @@ async function createCronToolsAllowPreflightDiagnostics(params: {
     ) {
       return undefined;
     }
-    const { listWebSearchProviders, resolveWebSearchProviderId } = await loadWebSearchRuntime();
-    const webSearchProviders = listWebSearchProviders({ config: params.cfg });
+    const { resolveWebSearchToolRuntimeContext } = await loadWebToolRuntimeContext();
+    const { config, preferRuntimeProviders, runtimeWebSearch } = resolveWebSearchToolRuntimeContext(
+      {
+        config: params.cfg,
+        lateBindRuntimeConfig: true,
+      },
+    );
+    const { hasUsableWebSearchProvider } = await loadWebSearchRuntime();
+    const hasWebSearchProvider = hasUsableWebSearchProvider({
+      config,
+      agentDir: params.agentDir,
+      runtimeWebSearch,
+      preferRuntimeProviders,
+    });
     return createCronRunDiagnosticsFromMissingWebSearchProvider({
       toolsAllow,
-      hasWebSearchProvider: Boolean(
-        resolveWebSearchProviderId({
-          config: params.cfg,
-          agentDir: params.agentDir,
-          providers: webSearchProviders,
-        }),
-      ),
+      hasWebSearchProvider,
     });
   } catch (error) {
     logWarn(
-      `[cron:${params.jobId}] Failed to inspect web_search providers for toolsAllow diagnostics: ${String(error)}`,
+      `[cron:${params.jobId}] Failed to inspect web_search provider state for toolsAllow diagnostics: ${String(error)}`,
     );
     return undefined;
   }
 }
 
-/** Exported for #91613 keyless-inherited delivery-context regression coverage. */
-export async function resolveCronDeliveryContext(params: {
+/** Resolves the delivery plan and concrete target for one isolated cron run. */
+async function resolveCronDeliveryContext(params: {
   cfg: OpenClawConfig;
   job: CronJob;
   agentId: string;
@@ -492,7 +506,20 @@ function appendCronDeliveryInstruction(params: {
         : "for the current chat";
     return `${params.commandBody}\n\nUse the message tool if you need to notify the user directly ${targetHint}. If you do not send directly, your final plain-text reply will be delivered automatically.`.trim();
   }
-  return `${params.commandBody}\n\nReturn your response as plain text; it will be delivered automatically. If the task explicitly calls for messaging a specific external recipient, note who/where it should go instead of sending it yourself.`.trim();
+  return `${params.commandBody}\n\nYour response will be delivered automatically. If the task explicitly calls for messaging a specific external recipient, note who/where it should go instead of sending it yourself.`.trim();
+}
+
+// Static per job class on purpose: the free-form job name must not be promoted
+// into the trusted suffix past the external-content fence, and byte-identical
+// suffixes keep prompt caching effective. External-hook runs get only the
+// common core: deferring to "the job's instructions" or advertising job
+// removal would hand fenced webhook content an override lever or a
+// destructive action inside the trusted suffix.
+function appendCronUnattendedRunPreamble(commandBody: string, opts: { externalHook: boolean }) {
+  const core = `This is an unattended scheduled run. Nobody is present to clarify or approve, so complete the task with what you have. Your final reply is the deliverable — not a plan, an acknowledgement, or a request for input. If nothing needs doing, reply exactly ${HEARTBEAT_TOKEN}. If something failed, state plainly what failed and what you tried — the scheduler owns retries and failure alerts.`;
+  const trustedExtra =
+    " Where the job's own instructions conflict with this preamble, the job's instructions win (a question or plan the job explicitly requests is a valid deliverable). If this job is no longer needed, you may remove it with the cron tool.";
+  return `${commandBody}\n\n${core}${opts.externalHook ? "" : trustedExtra}`;
 }
 
 function resolvePositiveContextTokens(value: unknown): number | undefined {
@@ -677,6 +704,7 @@ async function prepareCronRunContext(params: {
     agentId,
     nowMs: now,
     forceNew: usesDetachedRunSession,
+    hookExternalContentSource,
   });
   const reservedKey = isAgentHarnessSessionKey(agentSessionKey);
   if (cronSession.initialSessionEntry?.modelSelectionLocked === true) {
@@ -723,7 +751,6 @@ async function prepareCronRunContext(params: {
     );
   };
   const persistSessionEntry = createPersistCronSessionEntry({
-    isFastTestEnv: params.isFastTestEnv,
     cronSession,
     agentSessionKey,
     persistSessionEntry: persistCronSessionRow,
@@ -742,7 +769,9 @@ async function prepareCronRunContext(params: {
   }
 
   const resolvedModelSelection = await resolveCronModelSelection({
-    cfg: input.cfg,
+    // Authorization needs the unflattened active config so inherited policy
+    // aliases cannot be rebound by the selected agent's metadata aliases.
+    cfg: runtimeCfg,
     cfgWithAgentDefaults,
     agentConfigOverride,
     sessionEntry: cronSession.sessionEntry,
@@ -904,7 +933,7 @@ async function prepareCronRunContext(params: {
   const configuredProvider = cfgWithAgentDefaults.models?.providers?.[provider];
   const modelApi =
     findModelInCatalog(thinkingCatalog, provider, model)?.api ??
-    configuredProvider?.models.find((candidate) => candidate.id === model)?.api ??
+    configuredProvider?.models?.find((candidate) => candidate.id === model)?.api ??
     configuredProvider?.api;
   const preflightDiagnostics = await createCronToolsAllowPreflightDiagnostics({
     cfg: cfgWithAgentDefaults,
@@ -964,6 +993,7 @@ async function prepareCronRunContext(params: {
     sourceDelivery,
     toolsAllow: agentPayload?.toolsAllow,
   });
+  commandBody = appendCronUnattendedRunPreamble(commandBody, { externalHook: isExternalHook });
   commandBody = appendCronDeliveryInstruction({
     commandBody,
     deliveryRequested,
@@ -1074,7 +1104,6 @@ async function prepareCronRunContext(params: {
     };
     const runContinuationSession = baseSessionKey.startsWith("cron:")
       ? createCronRunContinuationSession({
-          isFastTestEnv: params.isFastTestEnv,
           cronSession,
           runSessionKey,
           thinkingLevel: requestedThinkLevel,
@@ -1377,6 +1406,7 @@ async function finalizeCronRun(params: {
   const resolveRunOutcome = (result?: {
     delivered?: boolean;
     deliveryAttempted?: boolean;
+    deliveryError?: string;
     delivery?: CronDeliveryTrace;
   }) =>
     prepared.withRunSession({
@@ -1388,16 +1418,20 @@ async function finalizeCronRun(params: {
       outputText,
       delivered: result?.delivered,
       deliveryAttempted: result?.deliveryAttempted,
+      deliveryError: result?.deliveryError,
       delivery: result?.delivery,
-      diagnostics: hasFatalErrorPayload
-        ? mergeCronRunDiagnostics(
-            runDiagnostics,
-            createCronRunDiagnosticsFromError(
+      diagnostics: mergeCronRunDiagnostics(
+        runDiagnostics,
+        hasFatalErrorPayload
+          ? createCronRunDiagnosticsFromError(
               "agent-run",
               embeddedRunError ?? "cron isolated run returned an error payload",
-            ),
-          )
-        : runDiagnostics,
+            )
+          : undefined,
+        result?.deliveryError
+          ? createCronRunDiagnosticsFromError("delivery", result.deliveryError)
+          : undefined,
+      ),
       ...telemetry,
     });
   const failPendingPresentationWarningUnlessDelivered = (delivered?: boolean) => {
@@ -1425,6 +1459,39 @@ async function finalizeCronRun(params: {
       runStartedAt: execution.runStartedAt,
       resolvedDelivery: prepared.resolvedDelivery,
       sourceDeliveryOutcome,
+    });
+  }
+  const hasCommittedTerminalProgress =
+    hasCommittedMessagingToolDeliveryEvidence(finalRunResult) ||
+    finalRunResult.didSendDeterministicApprovalPrompt === true ||
+    hasAcceptedSessionSpawn(finalRunResult.acceptedSessionSpawns) ||
+    (finalRunResult.successfulCronAdds ?? 0) > 0;
+  const hasIntentionalSilentReply =
+    finalRunResult.meta?.terminalReplyKind === "silent-empty" ||
+    isSilentReplyPayloadText(finalRunResult.meta?.finalAssistantRawText) ||
+    isSilentReplyPayloadText(finalRunResult.meta?.finalAssistantVisibleText);
+  if (
+    prepared.deliveryRequested &&
+    !hasFatalErrorPayload &&
+    !sourceDeliveryOutcome.satisfiesSourceDelivery &&
+    !hasCommittedTerminalProgress &&
+    !hasIntentionalSilentReply &&
+    deliveryPayloads.length === 0 &&
+    normalizeOptionalString(synthesizedText) === undefined
+  ) {
+    const error = "cron isolated run completed without a final assistant payload";
+    return prepared.withRunSession({
+      status: "error",
+      error,
+      summary: error,
+      outputText: error,
+      delivered: false,
+      deliveryAttempted: false,
+      diagnostics: mergeCronRunDiagnostics(
+        runDiagnostics,
+        createCronRunDiagnosticsFromError("agent-run", error),
+      ),
+      ...telemetry,
     });
   }
   if (hasFatalStructuredErrorPayload && prepared.deliveryRequested) {
@@ -1501,23 +1568,56 @@ async function finalizeCronRun(params: {
     delivered: deliveryResult.delivered,
   });
   if (deliveryResult.result) {
+    const deliveryError = deliveryResult.result.deliveryError ?? deliveryResult.deliveryError;
+    const deliveryDiagnosticError =
+      deliveryError ??
+      (deliveryResult.result.status === "error" ? deliveryResult.result.error : undefined);
     const resultWithDeliveryMeta: RunCronAgentTurnResult = {
       ...deliveryResult.result,
+      delivered: deliveryResult.result.delivered ?? deliveryResult.delivered,
       deliveryAttempted:
         deliveryResult.result.deliveryAttempted ?? deliveryResult.deliveryAttempted,
+      deliveryError,
       delivery: deliveryTrace,
       diagnostics: mergeCronRunDiagnostics(
         runDiagnostics,
         deliveryResult.result.diagnostics,
-        deliveryResult.result.status === "error" && deliveryResult.result.error
-          ? createCronRunDiagnosticsFromError("delivery", deliveryResult.result.error)
+        deliveryDiagnosticError
+          ? createCronRunDiagnosticsFromError("delivery", deliveryDiagnosticError)
           : undefined,
       ),
     };
     failPendingPresentationWarningUnlessDelivered(
       resultWithDeliveryMeta.delivered ?? deliveryResult.delivered,
     );
-    if (!hasFatalErrorPayload || deliveryResult.result.status !== "ok") {
+    if (!hasFatalErrorPayload) {
+      // A successful isolated agent turn must keep `status: "ok"` even when the
+      // post-run delivery phase fails. Collapsing the delivery error into the
+      // execution status made the outer scheduled run report `status=error`
+      // for a session that actually ended successfully (#94058). Delivery
+      // failure is recorded separately via `delivered`/`deliveryAttempted` and
+      // delivery diagnostics, while deliberate target-guard refusals stay errors.
+      if (
+        deliveryResult.result.status === "error" &&
+        deliveryResult.result.errorKind !== "delivery-target" &&
+        !params.isAborted()
+      ) {
+        const failedDeliveryError = resultWithDeliveryMeta.error;
+        const successfulResult: RunCronAgentTurnResult = {
+          ...resultWithDeliveryMeta,
+          status: "ok",
+          delivered: resultWithDeliveryMeta.delivered ?? deliveryResult.delivered,
+          ...(failedDeliveryError ? { deliveryError: failedDeliveryError } : {}),
+        };
+        // Preserve the dispatcher's final summary and diagnostics, but keep the
+        // downstream send failure out of execution-only status and error fields.
+        delete successfulResult.error;
+        delete successfulResult.errorKind;
+        return successfulResult;
+      }
+      return resultWithDeliveryMeta;
+    }
+    if (deliveryResult.result.status !== "ok") {
       return resultWithDeliveryMeta;
     }
     return resolveRunOutcome({
@@ -1532,6 +1632,7 @@ async function finalizeCronRun(params: {
   return resolveRunOutcome({
     delivered: deliveryResult.delivered,
     deliveryAttempted: deliveryResult.deliveryAttempted,
+    deliveryError: deliveryResult.deliveryError,
     delivery: deliveryTrace,
   });
 }
@@ -1606,7 +1707,9 @@ export async function runCronIsolatedAgentTurn(params: {
   const ownsRunContext = params.job.sessionTarget === "isolated";
   let runContextOwnerToken: string | undefined;
   let runLifecycleGeneration = admittedLifecycleGeneration;
+  let executionStarted = false;
   const notifyExecutionStarted = (info?: { lifecycleGeneration?: string }) => {
+    executionStarted = true;
     if (info?.lifecycleGeneration) {
       runLifecycleGeneration = info.lifecycleGeneration;
     }
@@ -1724,8 +1827,10 @@ export async function runCronIsolatedAgentTurn(params: {
       runTimeoutOverrideMs: prepared.context.runTimeoutOverrideMs,
       suppressExecNotifyOnExit: prepared.context.suppressExecNotifyOnExit,
     };
-    const execution = await prepared.context.sessionWorkAdmission.run(async () =>
-      executeCronRun(executionParams),
+    const execution = await prepared.context.sessionWorkAdmission.run(() =>
+      withAgentRunLifecycleGeneration(runLifecycleGeneration, () =>
+        executeCronRun(executionParams),
+      ),
     );
     const finalized = await finalizeCronRun({
       prepared: prepared.context,
@@ -1752,8 +1857,9 @@ export async function runCronIsolatedAgentTurn(params: {
     return prepared.context.withRunSession({
       status: "error",
       error,
+      executionStarted,
       // Carry the already-resolved run model into the error/timeout row so
-      // cron_run_logs keeps provider/model attribution instead of looking like
+      // Task-run history keeps provider/model attribution instead of looking like
       // an un-attributed cron timeout. finalizeCronRun does the same via
       // telemetry on the aborted path; this catch never reaches it.
       provider: prepared.context.liveSelection.provider,
@@ -1823,3 +1929,4 @@ export async function runCronIsolatedAgentTurn(params: {
     }
   }
 }
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

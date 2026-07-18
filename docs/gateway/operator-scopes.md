@@ -58,6 +58,11 @@ the concrete thing being approved or mutated:
 This lets lower-scope operators perform low-risk pairing actions without
 making all pairing approval admin-only.
 
+Session mutation RPCs are authorized by their negotiated operator scopes,
+independent of the connecting client's `client.id` or `client.mode`. Client
+identity can still affect connection and device-auth policy, but it neither
+grants nor removes session mutation authority.
+
 ## Device pairing approvals
 
 Device pairing records are the durable source of approved roles and scopes.
@@ -98,11 +103,11 @@ stores relate.
 `node.pair.approve` derives extra required scopes from the pending request's
 command list:
 
-| Declared commands                                     | Required scopes                       |
-| ----------------------------------------------------- | ------------------------------------- |
-| none                                                  | `operator.pairing`                    |
-| non-exec node commands                                | `operator.pairing` + `operator.write` |
-| `system.run`, `system.run.prepare`, or `system.which` | `operator.pairing` + `operator.admin` |
+| Declared commands                                                                                                    | Required scopes                       |
+| -------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| none                                                                                                                 | `operator.pairing`                    |
+| ordinary node commands                                                                                               | `operator.pairing` + `operator.write` |
+| `system.run`, `system.run.prepare`, `system.which`, `browser.proxy`, `fs.listDir`, or `system.execApprovals.get/set` | `operator.pairing` + `operator.admin` |
 
 Approving a node declaration does not enable commands that have a separate
 runtime allowlist gate. For example, approving a node that declares

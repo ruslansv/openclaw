@@ -100,6 +100,12 @@
   flex: 0 0 auto;
 }
 
+.chat-group.assistant .chat-group-footer-actions,
+.chat-group.assistant .chat-message-actions-row {
+  justify-content: flex-start;
+  margin-left: 0;
+}
+
 .chat-message-actions-row {
   align-self: stretch;
   margin-top: 4px;
@@ -151,6 +157,12 @@
   pointer-events: auto;
 }
 
+.chat-group:hover .chat-group-footer button:disabled,
+.chat-reply-context-menu button:disabled {
+  opacity: 0.3;
+  pointer-events: none;
+}
+
 .chat-group-footer button:hover,
 .chat-message-actions-row button:hover {
   opacity: 1 !important;
@@ -197,12 +209,22 @@
 }
 
 .chat-divider__label {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
   padding: 2px 10px;
   border: 1px solid var(--border);
   border-radius: var(--radius-full);
   background: rgba(255, 255, 255, 0.02);
   font-weight: 600;
   text-transform: uppercase;
+}
+
+.chat-divider__separator,
+.chat-divider__metric {
+  color: var(--muted);
+  font-weight: 500;
+  text-transform: none;
 }
 
 .chat-divider__details {
@@ -312,9 +334,20 @@ img.chat-avatar {
   box-shadow: none;
 }
 
-/* Keep the typing dots on the same left edge as the flat text column. */
+/* Keep the working claw on the same left edge as the flat text column. */
 .chat-group.assistant .chat-bubble.chat-reading-indicator {
   padding: 10px 0;
+}
+
+/* Working groups skip the avatar (the punching claw is the whole signal);
+   the inset keeps the claw on the text column so the reply materializes
+   exactly where it punched. Direct threads have no avatar indent to match. */
+.chat-group--working .chat-group-messages {
+  padding-left: 46px; /* .chat-avatar 36px + .chat-group gap 10px */
+}
+
+.chat-thread--direct .chat-group--working .chat-group-messages {
+  padding-left: 0;
 }
 
 /* Direct (1:1) threads drop avatars entirely: one agent plus one user makes
@@ -491,23 +524,6 @@ img.chat-avatar {
   box-shadow: none;
 }
 
-/* Fade-in animation for new messages */
-.chat-bubble.fade-in {
-  animation: fade-in 200ms ease-out;
-}
-
-@keyframes fade-in {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
 /* ── Message metadata (tokens, cost, model, context %) ── */
 .msg-meta {
   display: inline-flex;
@@ -573,7 +589,7 @@ details.msg-meta:not([open]) .msg-meta__details {
   left: 0;
   z-index: 30;
   width: max-content;
-  max-width: min(28rem, calc(100vw - 32px));
+  max-width: min(36rem, calc(100vw - 32px));
   padding: 3px 7px;
   border: 1px solid var(--border);
   border-radius: var(--radius-full);
@@ -697,8 +713,17 @@ details.msg-meta:not([open]) .msg-meta__details {
   color: #fff;
 }
 
+:root[data-theme="dark"] .chat-delete-confirm__yes {
+  background: var(--destructive);
+  color: var(--destructive-foreground);
+}
+
 .chat-delete-confirm__yes:hover {
   background: #dc2626;
+}
+
+:root[data-theme="dark"] .chat-delete-confirm__yes:hover {
+  background: var(--destructive-hover);
 }
 
 @media (max-width: 768px), (max-width: 932px) and (max-height: 500px) and (orientation: landscape) {
@@ -725,5 +750,11 @@ details.msg-meta:not([open]) .msg-meta__details {
   .chat-avatar,
   img.chat-avatar {
     display: none;
+  }
+
+  /* Avatars are hidden at this width, so the working group's avatar-column
+     inset would strand the claw 46px from where the reply text lands. */
+  .chat-group--working .chat-group-messages {
+    padding-left: 0;
   }
 }

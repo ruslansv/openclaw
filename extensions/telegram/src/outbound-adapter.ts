@@ -10,6 +10,7 @@ import {
   attachChannelToResult,
   createAttachedChannelResultAdapter,
 } from "openclaw/plugin-sdk/channel-send-result";
+import { questionGatewayRuntime } from "openclaw/plugin-sdk/question-gateway-runtime";
 import { chunkMarkdownTextWithMode } from "openclaw/plugin-sdk/reply-chunking";
 import {
   resolveSendableOutboundReplyParts,
@@ -18,6 +19,7 @@ import {
 import { isSingleUseReplyToMode } from "openclaw/plugin-sdk/reply-reference";
 import type { ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
 import { sanitizeAssistantVisibleText } from "openclaw/plugin-sdk/text-chunking";
+import { mergeTelegramAccountConfig, resolveDefaultTelegramAccountId } from "./accounts.js";
 import type { TelegramInlineButtons } from "./button-types.js";
 import { resolveTelegramInlineButtons } from "./button-types.js";
 import { splitTelegramHtmlChunks } from "./format.js";
@@ -40,6 +42,7 @@ const TELEGRAM_POLL_OPTION_LIMIT = 12;
 type TelegramSendFn = typeof import("./send.js").sendMessageTelegram;
 type TelegramSendOpts = Parameters<TelegramSendFn>[2];
 type TelegramReactionFn = typeof import("./send.js").reactMessageTelegram;
+type TelegramLocationFn = typeof import("./send.js").sendLocationTelegram;
 type ResolveTelegramSendFn = (deps?: OutboundSendDeps) => Promise<TelegramSendFn>;
 type LoadTelegramSendModuleFn = () => Promise<TelegramSendModule>;
 
@@ -136,6 +139,7 @@ type CreateTelegramOutboundAdapterOptions = {
 
 export async function sendTelegramPayloadMessages(params: {
   send: TelegramSendFn;
+  sendLocation: TelegramLocationFn;
   react: TelegramReactionFn;
   to: string;
   payload: ReplyPayload;
@@ -178,7 +182,38 @@ export async function sendTelegramPayloadMessages(params: {
     ...params.baseOpts,
     quoteText,
     ...(payload.audioAsVoice === true ? { asVoice: true } : {}),
+    ...(payload.videoAsNote === true ? { asVideoNote: true } : {}),
   };
+  if (payload.location) {
+    if (
+      mediaUrls.length > 0 ||
+      reactionEmoji ||
+      payload.audioAsVoice === true ||
+      payload.videoAsNote === true
+    ) {
+      throw new Error("Telegram location sends cannot be combined with media or reactions.");
+    }
+    if (text.trim()) {
+      // Cross-context policy can add a required origin marker to an otherwise
+      // standalone location. Persist it as a separate send without stealing
+      // the location's native reply, quote, or buttons.
+      await params.send(params.to, text, {
+        ...params.baseOpts,
+        replyToMessageId: undefined,
+        replyToIdSource: undefined,
+        replyToMode: undefined,
+      });
+    }
+    return await params.sendLocation(params.to, payload.location, {
+      ...params.baseOpts,
+      ...projectionOptions(true),
+      buttons,
+      quoteText,
+    });
+  }
+  if (payload.videoAsNote === true && mediaUrls.length !== 1) {
+    throw new Error("Telegram video notes require exactly one media attachment.");
+  }
   const shouldConsumeImplicitReplyTarget =
     payloadOpts.replyToIdSource === "implicit" &&
     payloadOpts.replyToMode !== undefined &&
@@ -249,9 +284,17 @@ export function createTelegramOutboundAdapter(
     chunkerMode: "markdown",
     extractMarkdownImages: true,
     textChunkLimit: TELEGRAM_TEXT_CHUNK_LIMIT,
-    // Default Telegram delivery reparses this result as Markdown; use its bold and strike delimiters.
-    sanitizeText: ({ text }) =>
-      sanitizeForPlainText(sanitizeAssistantVisibleText(text), { style: "markdown" }),
+    // Default Telegram delivery reparses this result as Markdown; use its bold
+    // and strike delimiters. Rich accounts must keep the agent's HTML islands
+    // (<details>, <tg-math-block>, checkbox lists) intact — the blocks emitter
+    // owns them and keeps unsupported tags visibly literal, so tag-stripping
+    // here would silently flatten the advertised rich contract.
+    sanitizeText: ({ text, cfg, accountId }) =>
+      cfg &&
+      mergeTelegramAccountConfig(cfg, accountId ?? resolveDefaultTelegramAccountId(cfg))
+        .richMessages === true
+        ? sanitizeAssistantVisibleText(text)
+        : sanitizeForPlainText(sanitizeAssistantVisibleText(text), { style: "markdown" }),
     shouldSuppressLocalPayloadPrompt: options.shouldSuppressLocalPayloadPrompt,
     beforeDeliverPayload: options.beforeDeliverPayload,
     shouldTreatDeliveredTextAsVisible: options.shouldTreatDeliveredTextAsVisible,
@@ -274,6 +317,37 @@ export function createTelegramOutboundAdapter(
     },
     renderPresentation: ({ payload, presentation }) =>
       canonicalizeTelegramPresentationPayload({ ...payload, presentation }),
+    afterDeliverPayload: ({ cfg, target, payload, results }) => {
+      const questionId = questionGatewayRuntime.readAskUserQuestionId(payload);
+      const telegramResults = results.filter(
+        (candidate) => candidate.channel === "telegram" && candidate.messageId,
+      );
+      const result =
+        telegramResults.find((candidate) => candidate.meta?.telegramHasInlineKeyboard === true) ??
+        telegramResults.at(-1);
+      const text = (
+        typeof result?.meta?.telegramDeliveredText === "string"
+          ? result.meta.telegramDeliveredText
+          : payload.text
+      )?.trim();
+      if (!questionId || !result || !text) {
+        return;
+      }
+      const chatId = result.chatId ?? normalizeTelegramOutboundTarget(target.to);
+      questionGatewayRuntime.registerChannelDelivery({
+        questionId,
+        deliveryId: `telegram:${target.accountId ?? "default"}:${chatId}:${result.messageId}`,
+        finalize: async (statusLine) => {
+          const { editMessageTelegram } = await loadSendModule();
+          await editMessageTelegram(chatId, result.messageId, `${text}\n\n${statusLine}`, {
+            cfg,
+            accountId: target.accountId ?? undefined,
+            buttons: [],
+            verbose: false,
+          });
+        },
+      });
+    },
     pinDeliveredMessage: async ({ cfg, target, messageId, pin, gatewayClientScopes }) => {
       const { pinMessageTelegram } = await loadSendModule();
       const outboundTo = normalizeTelegramOutboundTarget(target.to);
@@ -321,9 +395,10 @@ export function createTelegramOutboundAdapter(
         ...params,
         resolveSend,
       });
-      const { reactMessageTelegram } = await loadSendModule();
+      const { reactMessageTelegram, sendLocationTelegram } = await loadSendModule();
       const result = await sendTelegramPayloadMessages({
         send,
+        sendLocation: sendLocationTelegram,
         react: reactMessageTelegram,
         to: outboundTo,
         payload: params.payload,

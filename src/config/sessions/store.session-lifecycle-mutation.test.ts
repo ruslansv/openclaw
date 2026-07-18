@@ -261,7 +261,65 @@ describe("session store lifecycle mutations", () => {
     );
   });
 
-  it("durably writes SQLite transcript archives before deleting entry rows", async () => {
+  it("deletes transcript search state with archived session rows", async () => {
+    const sessionId = "delete-indexed-session";
+    await replaceSessionEntry(
+      { sessionKey: "agent:main:delete-indexed", storePath },
+      { sessionId, updatedAt: Date.now() },
+    );
+    await replaceSqliteTranscriptEvents(
+      { sessionKey: "agent:main:delete-indexed", sessionId, storePath },
+      [
+        {
+          type: "message",
+          id: "delete-indexed-message",
+          parentId: null,
+          message: {
+            role: "user",
+            content: [{ type: "text", text: "remove this searchable transcript" }],
+          },
+          timestamp: Date.now(),
+        } as unknown as TestTranscriptEvent,
+      ],
+    );
+    const database = openLifecycleTestDatabase(storePath);
+    const db = getNodeSqliteKysely<OpenClawAgentKyselyDatabase>(database.db);
+    const readSearchState = () => ({
+      fts: executeSqliteQuerySync(
+        database.db,
+        db
+          .selectFrom("session_transcript_fts")
+          .select("session_id")
+          .where("session_id", "=", sessionId),
+      ).rows,
+      watermarks: executeSqliteQuerySync(
+        database.db,
+        db
+          .selectFrom("session_transcript_index_state")
+          .select("session_id")
+          .where("session_id", "=", sessionId),
+      ).rows,
+    });
+
+    expect(readSearchState()).toEqual({
+      fts: [{ session_id: sessionId }],
+      watermarks: [{ session_id: sessionId }],
+    });
+
+    const result = await deleteSessionEntryLifecycle({
+      archiveTranscript: true,
+      storePath,
+      target: {
+        canonicalKey: "agent:main:delete-indexed",
+        storeKeys: ["agent:main:delete-indexed"],
+      },
+    });
+
+    expect(result.deleted).toBe(true);
+    expect(readSearchState()).toEqual({ fts: [], watermarks: [] });
+  });
+
+  it("fsyncs SQLite transcript archives through their writable descriptor before deletion", async () => {
     const now = Date.now();
     await replaceSessionEntry(
       { sessionKey: "agent:main:durable-delete", storePath },
@@ -275,17 +333,19 @@ describe("session store lifecycle mutations", () => {
       [createTranscriptEvent("durable-delete-session", "durable archive first")],
     );
 
-    const originalWriteFileSync = fs.writeFileSync;
-    const entryObservedDuringArchiveWrite: boolean[] = [];
-    const writeSpy = vi.spyOn(fs, "writeFileSync").mockImplementation((...args) => {
-      const filePath = String(args[0]);
-      if (filePath.includes("durable-delete-session.jsonl.deleted.")) {
-        entryObservedDuringArchiveWrite.push(
+    const originalRenameSync = fs.renameSync;
+    const entryObservedDuringArchiveRename: boolean[] = [];
+    const openSpy = vi.spyOn(fs, "openSync");
+    const fsyncSpy = vi.spyOn(fs, "fsyncSync");
+    const renameSpy = vi.spyOn(fs, "renameSync").mockImplementation((...args) => {
+      const archivePath = String(args[1]);
+      if (archivePath.includes("durable-delete-session.jsonl.deleted.")) {
+        entryObservedDuringArchiveRename.push(
           loadSessionEntry({ sessionKey: "agent:main:durable-delete", storePath })?.sessionId ===
             "durable-delete-session",
         );
       }
-      return originalWriteFileSync(...args);
+      return originalRenameSync(...args);
     });
 
     try {
@@ -300,9 +360,18 @@ describe("session store lifecycle mutations", () => {
 
       expect(result.deleted).toBe(true);
       expect(result.archivedTranscripts).toHaveLength(1);
-      expect(entryObservedDuringArchiveWrite).toEqual([true]);
+      expect(entryObservedDuringArchiveRename).toEqual([true]);
+      const archiveTempOpenIndexes = openSpy.mock.calls.flatMap((args, index) =>
+        String(args[0]).includes("durable-delete-session.jsonl.deleted.") ? [index] : [],
+      );
+      expect(archiveTempOpenIndexes).toHaveLength(1);
+      const archiveTempOpenIndex = archiveTempOpenIndexes[0] ?? -1;
+      expect(openSpy.mock.calls[archiveTempOpenIndex]?.[1]).toBe("wx");
+      expect(fsyncSpy).toHaveBeenCalledWith(openSpy.mock.results[archiveTempOpenIndex]?.value);
     } finally {
-      writeSpy.mockRestore();
+      renameSpy.mockRestore();
+      fsyncSpy.mockRestore();
+      openSpy.mockRestore();
     }
   });
 

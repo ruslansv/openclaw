@@ -38,6 +38,7 @@ export function buildGatewaySessionEventFields(params: {
     archivedAt: sessionRow.archivedAt ?? null,
     pinned: sessionRow.pinned ?? false,
     pinnedAt: sessionRow.pinnedAt ?? null,
+    icon: sessionRow.icon ?? null,
     unread: sessionRow.unread ?? false,
     lastReadAt: sessionRow.lastReadAt,
     lastActivityAt: sessionRow.lastActivityAt,
@@ -81,6 +82,8 @@ export function buildGatewaySessionEventFields(params: {
     model: sessionRow.model,
     agentRuntime: sessionRow.agentRuntime,
     status: sessionRow.status,
+    // Explicit false lets subscribed clients drop the flag during merge-reconcile.
+    hasAutomation: sessionRow.hasAutomation ?? false,
     ...(params.hasActiveRun === undefined ? {} : { hasActiveRun: params.hasActiveRun }),
     ...(params.activeRunIds === undefined ? {} : { activeRunIds: params.activeRunIds }),
     startedAt: sessionRow.startedAt,

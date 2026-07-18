@@ -54,6 +54,7 @@ const mocks = vi.hoisted(() => {
     resolveAgentExplicitModelPrimary: vi.fn().mockReturnValue(undefined),
     resolveAgentEffectiveModelPrimary: vi.fn().mockReturnValue(undefined),
     resolveAgentModelFallbacksOverride: vi.fn().mockReturnValue(undefined),
+    resolveAgentConfig: vi.fn().mockReturnValue(undefined),
     listAgentIds: vi.fn().mockReturnValue(["main", "jeremiah"]),
     listAgentEntries: vi.fn().mockReturnValue([{ id: "main" }, { id: "jeremiah" }]),
     ensureAuthProfileStore: vi.fn().mockReturnValue(store),
@@ -153,6 +154,14 @@ const mocks = vi.hoisted(() => {
     loadProviderUsageSummary: vi.fn().mockResolvedValue(undefined),
     resolveRuntimeSyntheticAuthProviderRefs: vi.fn().mockReturnValue([]),
     resolveProviderSyntheticAuthWithPlugin: vi.fn().mockReturnValue(undefined),
+    resolveAgentHarnessOwnerPluginIds: vi.fn().mockReturnValue(["codex"]),
+    runPluginPayloadSmokeCheckForManifestRecords: vi
+      .fn()
+      .mockResolvedValue({ checked: ["codex"], failures: [] }),
+    resolveAgentHarnessRuntimeAvailability: vi.fn().mockReturnValue({
+      status: "available",
+      ownerPluginIds: ["codex"],
+    }),
     loadModelCatalog: vi.fn().mockResolvedValue([]),
     modelCatalogRouteVariants: undefined as unknown[] | undefined,
     openAIModelRouteOverride: undefined as ((params: unknown) => unknown) | undefined,
@@ -167,6 +176,7 @@ vi.mock("../../agents/agent-scope.js", () => ({
   resolveAgentExplicitModelPrimary: mocks.resolveAgentExplicitModelPrimary,
   resolveAgentEffectiveModelPrimary: mocks.resolveAgentEffectiveModelPrimary,
   resolveAgentModelFallbacksOverride: mocks.resolveAgentModelFallbacksOverride,
+  resolveAgentConfig: mocks.resolveAgentConfig,
   listAgentIds: mocks.listAgentIds,
   listAgentEntries: mocks.listAgentEntries,
 }));
@@ -273,6 +283,13 @@ vi.mock("../../plugins/synthetic-auth.runtime.js", () => ({
 }));
 vi.mock("../../plugins/provider-runtime.js", () => ({
   resolveProviderSyntheticAuthWithPlugin: mocks.resolveProviderSyntheticAuthWithPlugin,
+}));
+vi.mock("../../agents/harness/runtime-plugin.js", () => ({
+  resolveAgentHarnessOwnerPluginIds: mocks.resolveAgentHarnessOwnerPluginIds,
+  resolveAgentHarnessRuntimeAvailability: mocks.resolveAgentHarnessRuntimeAvailability,
+}));
+vi.mock("../../cli/update-cli/plugin-payload-validation.js", () => ({
+  runPluginPayloadSmokeCheckForManifestRecords: mocks.runPluginPayloadSmokeCheckForManifestRecords,
 }));
 vi.mock("../../agents/model-catalog.js", () => ({
   loadModelCatalogSnapshot: async (...args: unknown[]) => {
@@ -421,6 +438,7 @@ async function withOpenAIStatusFixture<T>(
     agentRuntime?: string;
     catalog?: unknown[];
     routeVariants?: unknown[];
+    utilityModel?: string;
   },
   run: () => Promise<T>,
 ): Promise<T> {
@@ -441,6 +459,9 @@ async function withOpenAIStatusFixture<T>(
     agents: {
       defaults: {
         model: { primary: params.primary, fallbacks: params.fallbacks ?? [] },
+        // Route tests target the configured primary/fallback models; keep the
+        // derived utility model out unless a test opts in explicitly.
+        utilityModel: params.utilityModel ?? "",
         models: Object.fromEntries(
           Object.keys(configuredModels).map((model) => [
             model,
@@ -579,6 +600,90 @@ describe("modelsStatusCommand auth overview", () => {
     );
   });
 
+  it("reports the resolved utility model in JSON output", async () => {
+    const originalLoadConfig = mocks.loadConfig.getMockImplementation();
+    const baseConfig = {
+      agents: {
+        defaults: {
+          model: { primary: "anthropic/claude-opus-4-6", fallbacks: [] },
+        },
+      },
+      models: { providers: {} },
+      env: { shellEnv: { enabled: true } },
+    };
+    try {
+      mocks.loadConfig.mockReturnValue({
+        ...baseConfig,
+        agents: {
+          defaults: { ...baseConfig.agents.defaults, utilityModel: "openai/gpt-5.6-luna" },
+        },
+      });
+      const explicitRuntime = createRuntime();
+      await modelsStatusCommand({ json: true }, explicitRuntime as never);
+      expect(parseFirstJsonLog(explicitRuntime).utilityModel).toEqual({
+        ref: "openai/gpt-5.6-luna",
+        source: "config",
+      });
+
+      mocks.loadConfig.mockReturnValue({
+        ...baseConfig,
+        agents: {
+          defaults: { ...baseConfig.agents.defaults, utilityModel: "" },
+        },
+      });
+      const disabledRuntime = createRuntime();
+      await modelsStatusCommand({ json: true }, disabledRuntime as never);
+      expect(parseFirstJsonLog(disabledRuntime).utilityModel).toEqual({
+        ref: null,
+        source: "disabled",
+      });
+
+      // The utility model is a real runtime auth consumer: a provider that only
+      // narration/titles use must enter the route/auth analysis instead of
+      // staying invisible to `models status`.
+      mocks.loadConfig.mockReturnValue({
+        ...baseConfig,
+        agents: {
+          defaults: { ...baseConfig.agents.defaults, utilityModel: "mistral/mistral-small" },
+        },
+      });
+      const missingAuthRuntime = createRuntime();
+      await modelsStatusCommand({ json: true }, missingAuthRuntime as never);
+      const missingPayload = parseFirstJsonLog(missingAuthRuntime);
+      expect(missingPayload.utilityModel).toEqual({
+        ref: "mistral/mistral-small",
+        source: "config",
+      });
+      expect(missingPayload.auth.modelRouteIssues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ provider: "mistral", model: "mistral-small" }),
+        ]),
+      );
+
+      // Aliases are valid utilityModel input; the report shows the canonical ref.
+      mocks.loadConfig.mockReturnValue({
+        ...baseConfig,
+        agents: {
+          defaults: {
+            ...baseConfig.agents.defaults,
+            models: { "anthropic/claude-opus-4-6": { alias: "Opus" } },
+            utilityModel: "Opus",
+          },
+        },
+      });
+      const aliasRuntime = createRuntime();
+      await modelsStatusCommand({ json: true }, aliasRuntime as never);
+      expect(parseFirstJsonLog(aliasRuntime).utilityModel).toEqual({
+        ref: "anthropic/claude-opus-4-6",
+        source: "config",
+      });
+    } finally {
+      if (originalLoadConfig) {
+        mocks.loadConfig.mockImplementation(originalLoadConfig);
+      }
+    }
+  });
+
   it("honors OPENCLAW_AGENT_DIR when no --agent override is provided", async () => {
     const localRuntime = createRuntime();
     mocks.resolveAgentDir.mockClear();
@@ -680,6 +785,90 @@ describe("modelsStatusCommand auth overview", () => {
     expect(textRuntime.log.mock.calls.flat().join("\n")).not.toContain("set an API key env var");
   });
 
+  it("reports usable Codex auth as unavailable when its harness plugin is quarantined", async () => {
+    const localRuntime = createRuntime();
+    const textRuntime = createRuntime();
+    const payloadFailure = {
+      pluginId: "codex",
+      installPath: "/private/plugin",
+      reason: "missing-package-dir" as const,
+      detail: "missing",
+    };
+    mocks.runPluginPayloadSmokeCheckForManifestRecords
+      .mockResolvedValueOnce({ checked: ["codex"], failures: [payloadFailure] })
+      .mockResolvedValueOnce({ checked: ["codex"], failures: [payloadFailure] });
+    const resolveAvailability = (params: {
+      payloadFailures: Array<{ pluginId: string; reason: string }>;
+    }) =>
+      params.payloadFailures.some((failure) => failure.pluginId === "codex")
+        ? {
+            status: "unavailable",
+            ownerPluginIds: ["codex", "openai"],
+            reason: "owner-plugin-degraded",
+            detail:
+              'Agent harness "codex" owner plugin "codex" is unavailable (missing-package-dir).',
+          }
+        : { status: "available", ownerPluginIds: ["codex", "openai"] };
+    mocks.resolveAgentHarnessRuntimeAvailability
+      .mockImplementationOnce(resolveAvailability)
+      .mockImplementationOnce(resolveAvailability);
+    await withOpenAIStatusFixture(
+      {
+        primary: "openai/gpt-5.5",
+        profiles: {
+          "openai:default": {
+            type: "oauth",
+            provider: "openai",
+            access: "oauth-access",
+            refresh: "oauth-refresh",
+            expires: Date.now() + 60_000,
+          },
+        },
+      },
+      async () => {
+        await modelsStatusCommand({ json: true, check: true }, localRuntime as never);
+        await modelsStatusCommand({ check: true }, textRuntime as never);
+      },
+    );
+
+    expect(mocks.runPluginPayloadSmokeCheckForManifestRecords).toHaveBeenCalledWith(
+      expect.objectContaining({ env: process.env }),
+    );
+    expect(mocks.resolveAgentHarnessRuntimeAvailability).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runtime: "codex",
+        provider: "openai",
+        payloadFailures: [payloadFailure],
+        payloadCheckedPluginIds: ["codex"],
+        selectedPluginRootDirs: expect.any(Map),
+      }),
+    );
+    const payload = parseFirstJsonLog(localRuntime);
+    expect(payload.auth.runtimeAuthRoutes).toEqual([
+      {
+        provider: "openai",
+        runtime: "codex",
+        authProvider: "openai",
+        status: "unavailable",
+        authStatus: "usable",
+        runtimeStatus: "unavailable",
+        runtimeReason: "owner-plugin-degraded",
+        runtimeDetail:
+          'Agent harness "codex" owner plugin "codex" is unavailable (missing-package-dir).',
+        runtimePluginIds: ["codex", "openai"],
+        effective: {
+          kind: "profiles",
+          detail: "/tmp/openclaw-agent/auth-profiles.json",
+        },
+      },
+    ]);
+    expect(localRuntime.exit).toHaveBeenCalledWith(1);
+    expect(textRuntime.exit).toHaveBeenCalledWith(1);
+    expect(textRuntime.log.mock.calls.flat().join("\n")).toContain("status=unavailable");
+    expect(textRuntime.log.mock.calls.flat().join("\n")).toContain("auth=usable");
+    expect(textRuntime.log.mock.calls.flat().join("\n")).toContain("runtime=unavailable");
+  });
+
   it("evaluates mixed primary and fallback OpenAI routes independently", async () => {
     const localRuntime = createRuntime();
     await withOpenAIStatusFixture(
@@ -724,6 +913,39 @@ describe("modelsStatusCommand auth overview", () => {
       },
     ]);
     expect(localRuntime.exit).toHaveBeenCalledWith(1);
+  });
+
+  it("flags a utility model whose route needs api-key auth despite an OAuth-healthy primary", async () => {
+    const localRuntime = createRuntime();
+    await withOpenAIStatusFixture(
+      {
+        primary: "openai/gpt-5.5",
+        utilityModel: "openai/gpt-5.6",
+        profiles: {
+          "openai:default": {
+            type: "oauth",
+            provider: "openai",
+            access: "oauth-access",
+            refresh: "oauth-refresh",
+            expires: Date.now() + 60_000,
+          },
+        },
+      },
+      async () => {
+        await modelsStatusCommand({ json: true, check: true }, localRuntime as never);
+      },
+    );
+    const payload = parseFirstJsonLog(localRuntime);
+    expect(payload.utilityModel).toEqual({ ref: "openai/gpt-5.6", source: "config" });
+    expect(payload.auth.modelRouteIssues).toEqual([
+      {
+        kind: "missing-auth",
+        provider: "openai",
+        model: "gpt-5.6",
+        authRequirement: "api-key",
+        message: "No usable api-key authentication is available for openai/gpt-5.6.",
+      },
+    ]);
   });
 
   it("reports incompatible model routes separately in JSON and text", async () => {
@@ -1098,6 +1320,13 @@ describe("modelsStatusCommand auth overview", () => {
         value: "plugin-owned",
         source: "codex-app-server",
       });
+      // #104713: the summary must ship only the projected fields; the runtime
+      // synthetic-auth object also carries the raw credential and must never
+      // reach the JSON payload.
+      expect(
+        Object.keys(requireRecord(codexProvider.syntheticAuth, "codex synthetic auth")),
+      ).toStrictEqual(["value", "source"]);
+      expect(JSON.stringify(payload)).not.toContain("codex-runtime-token");
       expectRecordFields(requireRecord(codexProvider.effective, "codex effective auth"), {
         kind: "synthetic",
         detail: "codex-app-server",
@@ -1365,3 +1594,4 @@ describe("modelsStatusCommand auth overview", () => {
     }
   });
 });
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

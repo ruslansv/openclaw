@@ -2,6 +2,7 @@
 // rotation, output extraction, and decision summaries.
 import fs from "node:fs/promises";
 import path from "node:path";
+import { expectDefined } from "@openclaw/normalization-core";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeNullableString,
@@ -45,6 +46,8 @@ import {
 import { resolveOfficialExternalPluginRepairHint } from "../plugins/official-external-plugin-repair-hints.js";
 import { runExec } from "../process/exec.js";
 import { providerOperationRetryConfig } from "../provider-runtime/operation-retry.js";
+import { assertSecretOwnerAvailable } from "../secrets/runtime-degraded-state.js";
+import { assertRuntimeMediaRequestSecretOwnerAvailable } from "../secrets/runtime-media-secret-owner.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
 import { MediaAttachmentCache } from "./attachments.js";
 import {
@@ -750,7 +753,7 @@ function assertMinAudioSize(params: { size: number; attachmentIndex: number }): 
  *   register with the official external provider catalog to receive the
  *   actionable hint.
  */
-export function formatMissingProviderHint(providerId: string): string {
+function formatMissingProviderHint(providerId: string): string {
   const trimmed = providerId.trim();
   if (!trimmed) {
     return "";
@@ -791,6 +794,7 @@ export async function runProviderEntry(params: {
   workspaceDir?: string;
   providerRegistry: ProviderRegistry;
   config?: MediaUnderstandingConfig;
+  secretOwnerId?: string;
 }): Promise<MediaUnderstandingOutput | null> {
   const { entry, capability, cfg } = params;
   const providerIdRaw = entry.provider?.trim();
@@ -799,6 +803,10 @@ export async function runProviderEntry(params: {
   }
   const providerId = normalizeMediaProviderId(providerIdRaw);
   const requestProviderId = normalizeMediaExecutionProviderId(providerIdRaw);
+  assertRuntimeMediaRequestSecretOwnerAvailable({ capability, entry });
+  if (params.secretOwnerId) {
+    assertSecretOwnerAvailable("capability", params.secretOwnerId);
+  }
   const { maxBytes, maxChars, timeoutMs, prompt, hasConfiguredPrompt } = resolveEntryRunOptions({
     capability,
     entry,
@@ -977,6 +985,16 @@ export async function runProviderEntry(params: {
     workspaceDir: params.workspaceDir,
   });
   const authSource = auth.source ?? `provider:${providerId}`;
+  const model =
+    entry.model?.trim() ||
+    (await import("./defaults.js")).resolveDefaultMediaModel({
+      cfg,
+      providerId,
+      capability: "video",
+      workspaceDir: params.workspaceDir,
+      providerRegistry: params.providerRegistry,
+    }) ||
+    entry.model;
   const buildRequest = (requestAuth: { kind: "api-key"; apiKey: string } | { kind: "none" }) => ({
     buffer: media.buffer,
     fileName: media.fileName,
@@ -989,7 +1007,7 @@ export async function runProviderEntry(params: {
     baseUrl,
     headers,
     request,
-    model: entry.model,
+    model,
     prompt,
     timeoutMs,
     fetchFn,
@@ -1008,7 +1026,7 @@ export async function runProviderEntry(params: {
     attachmentIndex: params.attachmentIndex,
     text: trimOutput(result.text, maxChars),
     provider: providerId,
-    model: result.model ?? entry.model,
+    model: result.model ?? model,
   };
 }
 
@@ -1072,11 +1090,15 @@ export async function runCliEntry(params: {
     if (shouldLogVerbose()) {
       logVerbose(`Media understanding via CLI: ${argv.join(" ")}`);
     }
-    const { stdout, stderr } = await runExec(argv[0], argv.slice(1), {
-      timeoutMs,
-      maxBuffer: CLI_OUTPUT_MAX_BUFFER,
-      cwd: isAntigravityCliCommand(command) ? path.dirname(mediaPath) : undefined,
-    });
+    const { stdout, stderr } = await runExec(
+      expectDefined(argv[0], "argv entry at 0"),
+      argv.slice(1),
+      {
+        timeoutMs,
+        maxBuffer: CLI_OUTPUT_MAX_BUFFER,
+        cwd: isAntigravityCliCommand(command) ? path.dirname(mediaPath) : undefined,
+      },
+    );
     const requestedBackend =
       capability === "audio"
         ? resolveRequestedLocalAudioBackend({
@@ -1115,3 +1137,4 @@ export async function runCliEntry(params: {
     await fs.rm(outputDir, { recursive: true, force: true }).catch(() => {});
   }
 }
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
