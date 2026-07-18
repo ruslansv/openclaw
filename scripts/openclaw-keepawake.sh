@@ -41,6 +41,8 @@ is_caffeinate_pid() {
   kill -0 "$pid" >/dev/null 2>&1 || return 1
   local comm
   comm="$(ps -p "$pid" -o comm= 2>/dev/null | tr -d '[:space:]')"
+  # macOS may report the executable's absolute path for `comm=`.
+  comm="${comm##*/}"
   [[ "$comm" == "caffeinate" ]]
 }
 

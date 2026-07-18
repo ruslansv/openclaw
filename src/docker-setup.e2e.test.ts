@@ -12,6 +12,7 @@ import {
   findGatewayStartLineIndex,
   isGatewayStartLine,
   noFollowOwnershipRepair,
+  noFollowOwnershipRepairExcluding,
   prestartContainerEnvFlags,
   prestartSafePath,
   readDockerLog,
@@ -747,7 +748,11 @@ describe("scripts/docker/setup.sh", () => {
     const log = await readDockerLog(activeSandbox);
     const chownIdx = log.indexOf("--user root");
     const safePathIdx = log.indexOf(`${prestartSafePath}; export PATH`);
-    const stateRepairIdx = log.indexOf(noFollowOwnershipRepair("/home/node/.openclaw"));
+    const stateRepair = noFollowOwnershipRepairExcluding(
+      "/home/node/.openclaw",
+      "/home/node/.openclaw/workspace",
+    );
+    const stateRepairIdx = log.indexOf(stateRepair);
     const onboardIdx = log.indexOf("onboard");
     expect(chownIdx).toBeGreaterThanOrEqual(0);
     expect(safePathIdx).toBeGreaterThan(chownIdx);
@@ -766,7 +771,8 @@ describe("scripts/docker/setup.sh", () => {
       '/usr/bin/find -P "$root" -xdev -execdir /usr/bin/chown -h node:node {} +',
     );
     expect(log).toContain("/usr/bin/chown -h node:node /home/node/.config");
-    expect(log).toContain(noFollowOwnershipRepair("/home/node/.openclaw"));
+    expect(log).toContain(stateRepair);
+    expect(log).not.toContain(noFollowOwnershipRepair("/home/node/.openclaw"));
     expect(log).toContain(noFollowOwnershipRepair("/home/node/.config/openclaw"));
     expect(log).toContain("[ ! -L /home/node/.openclaw/workspace/.openclaw ]");
     expect(log).toContain(noFollowOwnershipRepair("/home/node/.openclaw/workspace/.openclaw"));
@@ -1142,7 +1148,9 @@ describe("scripts/docker/setup.sh", () => {
     expect(compose).toContain(
       '/usr/bin/find -P "$$root" -xdev -execdir /usr/bin/chown -h node:node {} +',
     );
-    expect(compose).toContain(noFollowOwnershipRepair("/home/node/.openclaw"));
+    expect(compose).toContain("/usr/bin/find -P /home/node/.openclaw -xdev \\");
+    expect(compose).toContain("-path /home/node/.openclaw/workspace -prune -o \\");
+    expect(compose).not.toContain(noFollowOwnershipRepair("/home/node/.openclaw"));
     expect(compose).toContain("[ ! -L /home/node/.openclaw/workspace/.openclaw ]");
     expect(compose).not.toContain("chown -R");
     expect(compose).not.toContain("-exec chown");

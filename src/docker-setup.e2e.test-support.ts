@@ -285,6 +285,8 @@ export const prestartContainerEnvFlags = [
 
 export const noFollowOwnershipRepair = (root: string) =>
   `/usr/bin/find -P ${root} -xdev -execdir /usr/bin/chown -h node:node {} +`;
+export const noFollowOwnershipRepairExcluding = (root: string, excluded: string) =>
+  `/usr/bin/find -P ${root} -xdev -path ${excluded} -prune -o -execdir /usr/bin/chown -h node:node {} +`;
 export const prestartSafePath = "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
 export function requireSandbox(sandbox: DockerSetupSandbox | null): DockerSetupSandbox {

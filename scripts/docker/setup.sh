@@ -935,9 +935,8 @@ fi
 # it works regardless of the host uid and doesn't require host-side root.
 echo ""
 echo "==> Fixing data-directory permissions"
-# Use -xdev to restrict chown to the config-dir mount only — without it,
-# the recursive chown would cross into the workspace bind mount and rewrite
-# ownership of all user project files on Linux hosts.
+# Nested bind mounts can share a device id, so explicitly prune the workspace;
+# -xdev alone cannot keep config ownership repair out of user project files.
 # Run a no-dereference chown from each entry's directory. This keeps ownership
 # repair for sockets/FIFOs while preventing a swapped symlink leaf from
 # redirecting the root operation outside the mounted tree.
@@ -957,7 +956,7 @@ run_prestart_gateway --user root --entrypoint sh openclaw-gateway -c \
    for root in /home/node/.cache /home/node/.local /home/node/.npm /home/node/.npm-global /home/node/go; do \
      /usr/bin/find -P "$root" -xdev -execdir /usr/bin/chown -h node:node {} +; \
    done; \
-   /usr/bin/find -P /home/node/.openclaw -xdev -execdir /usr/bin/chown -h node:node {} +; \
+   /usr/bin/find -P /home/node/.openclaw -xdev -path /home/node/.openclaw/workspace -prune -o -execdir /usr/bin/chown -h node:node {} +; \
    /usr/bin/chown -h node:node /home/node/.config; \
    /usr/bin/find -P /home/node/.config/openclaw -xdev -execdir /usr/bin/chown -h node:node {} +; \
    if [ -d /home/node/.openclaw/workspace/.openclaw ] && [ ! -L /home/node/.openclaw/workspace/.openclaw ]; then \

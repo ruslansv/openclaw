@@ -35,7 +35,11 @@ services:
         for root in /home/node/.cache /home/node/.local /home/node/.npm /home/node/.npm-global /home/node/go; do
           /usr/bin/find -P "$$root" -xdev -execdir /usr/bin/chown -h node:node {} +
         done
-        /usr/bin/find -P /home/node/.openclaw -xdev -execdir /usr/bin/chown -h node:node {} +
+        # Nested bind mounts can share a device id, so -xdev alone cannot keep
+        # config ownership repair out of the separately mounted workspace.
+        /usr/bin/find -P /home/node/.openclaw -xdev \
+          -path /home/node/.openclaw/workspace -prune -o \
+          -execdir /usr/bin/chown -h node:node {} +
         if [ -d /home/node/.openclaw/workspace/.openclaw ] && \
           [ ! -L /home/node/.openclaw/workspace/.openclaw ]; then
           /usr/bin/find -P /home/node/.openclaw/workspace/.openclaw -xdev \
