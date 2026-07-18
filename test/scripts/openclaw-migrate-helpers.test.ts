@@ -1,7 +1,7 @@
 // Docker migration helper tests cover host-state backup and restore invariants.
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -13,13 +13,14 @@ const RESTORE_SCRIPT = "scripts/migrate/restore-openclaw.sh";
 let tempRoot: string | undefined;
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
-function runScript(script: string, args: string[]) {
+function runScript(script: string, args: string[], extraEnv: NodeJS.ProcessEnv = {}) {
   return spawnSync("bash", [script, ...args], {
     cwd: process.cwd(),
     encoding: "utf8",
     env: {
       HOME: path.join(tempRoot ?? tmpdir(), "home"),
       PATH: process.env.PATH ?? "",
+      ...extraEnv,
     },
   });
 }
@@ -27,6 +28,30 @@ function runScript(script: string, args: string[]) {
 async function writeFixtureFile(filePath: string, value: string) {
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, value);
+}
+
+async function writeDockerStub(root: string, repoRoot: string) {
+  const binDir = path.join(root, "bin");
+  const dockerLog = path.join(root, "docker.log");
+  const composePath = path.join(repoRoot, "docker-compose.yml");
+  await mkdir(binDir, { recursive: true });
+  await writeFile(composePath, "services:\n  openclaw-gateway:\n    image: test\n");
+  const dockerStub = path.join(binDir, "docker");
+  await writeFile(
+    dockerStub,
+    `#!/usr/bin/env bash
+set -eu
+printf '%s\\n' "$*" >> "$DOCKER_LOG"
+case " $* " in
+  *" ps --status running -q openclaw-gateway "*) printf '%s\\n' test-container ;;
+  *" stop openclaw-gateway "*)
+    if [ -n "\${DOCKER_REMOVE_ON_STOP:-}" ]; then rm -rf -- "$DOCKER_REMOVE_ON_STOP"; fi
+    ;;
+esac
+`,
+  );
+  await chmod(dockerStub, 0o755);
+  return { binDir, composePath, dockerLog };
 }
 
 describe("openclaw Docker migration helpers", () => {
@@ -46,6 +71,7 @@ describe("openclaw Docker migration helpers", () => {
     const authProfileSecretDir = path.join(root, "auth-profile-secrets");
     const backupDir = path.join(root, "backups");
     await mkdir(repoRoot, { recursive: true });
+    const { binDir, composePath, dockerLog } = await writeDockerStub(root, repoRoot);
     await writeFixtureFile(path.join(configDir, "openclaw.json"), '{"ok":true}\n');
     await writeFixtureFile(path.join(workspaceDir, "scripts", "digest.js"), "console.log('ok');\n");
     await writeFixtureFile(
@@ -63,16 +89,23 @@ describe("openclaw Docker migration helpers", () => {
       ].join("\n"),
     );
 
-    const backup = runScript(BACKUP_SCRIPT, [
-      "--repo-root",
-      repoRoot,
-      "--output-dir",
-      backupDir,
-      "--name",
-      "sample",
-    ]);
+    const backup = runScript(
+      BACKUP_SCRIPT,
+      ["--repo-root", repoRoot, "--output-dir", backupDir, "--name", "sample"],
+      {
+        DOCKER_LOG: dockerLog,
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      },
+    );
     expect(backup.stderr).toBe("");
     expect(backup.status).toBe(0);
+
+    const dockerCalls = readFileSync(dockerLog, "utf8");
+    const stopCall = `compose -f ${composePath} stop openclaw-gateway`;
+    const startCall = `compose -f ${composePath} start openclaw-gateway`;
+    expect(dockerCalls).toContain("ps --status running -q openclaw-gateway");
+    expect(dockerCalls.indexOf(stopCall)).toBeGreaterThanOrEqual(0);
+    expect(dockerCalls.indexOf(startCall)).toBeGreaterThan(dockerCalls.indexOf(stopCall));
 
     const archivePath = path.join(backupDir, "sample.tar.gz");
     expect(existsSync(archivePath)).toBe(true);
@@ -116,5 +149,50 @@ describe("openclaw Docker migration helpers", () => {
       "OPENCLAW_GATEWAY_TOKEN=test-token-placeholder",
     );
     expect(statSync(path.join(repoRoot, ".env")).mode & 0o077).toBe(0);
+  });
+
+  it("restarts the gateway when a quiesced backup fails", async () => {
+    const root = tempRoot;
+    if (!root) {
+      throw new Error("missing temp root");
+    }
+
+    const repoRoot = path.join(root, "repo-failed-backup");
+    const configDir = path.join(root, "failed-config");
+    const workspaceDir = path.join(root, "failed-workspace");
+    const backupDir = path.join(root, "failed-backups");
+    await mkdir(repoRoot, { recursive: true });
+    await writeFixtureFile(path.join(configDir, "openclaw.json"), "{}\n");
+    await writeFixtureFile(path.join(workspaceDir, "digest.js"), "export {};\n");
+    const { binDir, composePath, dockerLog } = await writeDockerStub(root, repoRoot);
+
+    const backup = runScript(
+      BACKUP_SCRIPT,
+      [
+        "--repo-root",
+        repoRoot,
+        "--config-dir",
+        configDir,
+        "--workspace-dir",
+        workspaceDir,
+        "--output-dir",
+        backupDir,
+        "--name",
+        "failed",
+      ],
+      {
+        DOCKER_LOG: dockerLog,
+        DOCKER_REMOVE_ON_STOP: configDir,
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      },
+    );
+
+    expect(backup.status).not.toBe(0);
+    expect(existsSync(path.join(backupDir, "failed.tar.gz"))).toBe(false);
+    const dockerCalls = readFileSync(dockerLog, "utf8");
+    const stopCall = `compose -f ${composePath} stop openclaw-gateway`;
+    const startCall = `compose -f ${composePath} start openclaw-gateway`;
+    expect(dockerCalls.indexOf(stopCall)).toBeGreaterThanOrEqual(0);
+    expect(dockerCalls.indexOf(startCall)).toBeGreaterThan(dockerCalls.indexOf(stopCall));
   });
 });

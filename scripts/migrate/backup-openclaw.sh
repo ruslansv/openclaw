@@ -18,6 +18,7 @@ Options:
                            Auth-profile secret dir (default: env or ~/.openclaw-auth-profile-secrets)
   --output-dir <path>      Output directory for backup archive (default: <repo-root>/backups)
   --name <name>            Backup name prefix (default: openclaw-backup-<timestamp>)
+  --no-stop                Do not stop/restart the gateway; only use when it is already quiesced
   -h, --help               Show this help
 EOF
 }
@@ -32,6 +33,7 @@ OUTPUT_DIR=""
 BACKUP_NAME=""
 ENV_FILE_EXPLICIT=0
 OUTPUT_DIR_EXPLICIT=0
+STOP_FIRST=1
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -64,6 +66,10 @@ while [[ $# -gt 0 ]]; do
     --name)
       BACKUP_NAME="$2"
       shift 2
+      ;;
+    --no-stop)
+      STOP_FIRST=0
+      shift
       ;;
     -h|--help)
       usage
@@ -124,10 +130,45 @@ umask 077
 mkdir -p "$OUTPUT_DIR"
 
 tmpdir="$(mktemp -d)"
-trap 'rm -rf "$tmpdir"' EXIT
+compose_file="$REPO_ROOT/docker-compose.yml"
+restart_gateway=0
+
+cleanup() {
+  local status=$?
+  trap - EXIT INT TERM
+  rm -rf "$tmpdir"
+  if [[ $restart_gateway -eq 1 ]]; then
+    echo "==> Restarting gateway container"
+    if ! docker compose -f "$compose_file" start openclaw-gateway >/dev/null; then
+      echo "ERROR: Backup finished, but openclaw-gateway could not be restarted." >&2
+      status=1
+    fi
+  fi
+  exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 stage="$tmpdir/stage"
 mkdir -p "$stage/payload/config" "$stage/payload/workspace" "$stage/payload/repo" "$stage/meta"
+
+if [[ $STOP_FIRST -eq 1 ]]; then
+  require_cmd docker
+  [[ -f "$compose_file" ]] || fail "Compose file not found at $compose_file (use --no-stop only if the gateway is already stopped)."
+  if ! gateway_container_id="$(
+    docker compose -f "$compose_file" ps --status running -q openclaw-gateway 2>/dev/null
+  )"; then
+    fail "Failed to inspect openclaw-gateway. Fix Docker/Compose first or use --no-stop only if the gateway is already stopped."
+  fi
+  if [[ -n "$gateway_container_id" ]]; then
+    restart_gateway=1
+    echo "==> Stopping gateway container for a consistent backup"
+    if ! docker compose -f "$compose_file" stop openclaw-gateway >/dev/null; then
+      fail "Failed to stop openclaw-gateway; no backup was created."
+    fi
+  fi
+fi
 
 echo "==> Copying config directory"
 config_rsync_args=(-a)

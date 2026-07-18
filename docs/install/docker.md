@@ -712,6 +712,12 @@ From the repo root:
 scripts/migrate/backup-openclaw.sh
 ```
 
+By default, the helper briefly stops a running `openclaw-gateway` before it
+copies mutable state, then restarts the same container after the archive is
+finished (including after a backup failure). This avoids copying SQLite files
+while they are changing. Use `--no-stop` only when you have already quiesced
+the gateway yourself.
+
 The archive includes:
 
 - OpenClaw config dir (`OPENCLAW_CONFIG_DIR` or `~/.openclaw`)
