@@ -40,9 +40,8 @@ services:
         /usr/bin/find -P /home/node/.openclaw -xdev \
           -path /home/node/.openclaw/workspace -prune -o \
           -execdir /usr/bin/chown -h node:node {} +
-        # Repair only the workspace mountpoint itself; project files keep their
-        # existing ownership while the node user can create top-level entries.
-        /usr/bin/chown -h node:node /home/node/.openclaw/workspace
+        # Keep the workspace mountpoint and project files host-owned. Linux
+        # operators grant uid 1000 access explicitly when host UIDs differ.
         if [ -d /home/node/.openclaw/workspace/.openclaw ] && \
           [ ! -L /home/node/.openclaw/workspace/.openclaw ]; then
           /usr/bin/find -P /home/node/.openclaw/workspace/.openclaw -xdev \

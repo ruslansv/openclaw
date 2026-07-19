@@ -941,7 +941,8 @@ echo "==> Fixing data-directory permissions"
 # repair for sockets/FIFOs while preventing a swapped symlink leaf from
 # redirecting the root operation outside the mounted tree.
 # After fixing the config dir, only the OpenClaw metadata subdirectory
-# (.openclaw/) inside the workspace gets chowned, not the user's project files.
+# (.openclaw/) inside the workspace gets chowned. The mountpoint and project
+# files stay host-owned; Linux operators grant uid 1000 access explicitly.
 run_prestart_gateway --user root --entrypoint sh openclaw-gateway -c \
   'set -eu; \
    PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin; export PATH; \
@@ -957,7 +958,6 @@ run_prestart_gateway --user root --entrypoint sh openclaw-gateway -c \
      /usr/bin/find -P "$root" -xdev -execdir /usr/bin/chown -h node:node {} +; \
    done; \
    /usr/bin/find -P /home/node/.openclaw -xdev -path /home/node/.openclaw/workspace -prune -o -execdir /usr/bin/chown -h node:node {} +; \
-   /usr/bin/chown -h node:node /home/node/.openclaw/workspace; \
    /usr/bin/chown -h node:node /home/node/.config; \
    /usr/bin/find -P /home/node/.config/openclaw -xdev -execdir /usr/bin/chown -h node:node {} +; \
    if [ -d /home/node/.openclaw/workspace/.openclaw ] && [ ! -L /home/node/.openclaw/workspace/.openclaw ]; then \
