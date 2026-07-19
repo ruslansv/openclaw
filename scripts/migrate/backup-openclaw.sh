@@ -238,6 +238,7 @@ fi
   python3 - "$stage" <<'PY'
 import hashlib
 import os
+import stat
 import sys
 
 stage = sys.argv[1]
@@ -250,7 +251,8 @@ for root, dirs, files in os.walk(stage):
         rel = os.path.relpath(path, stage)
         if rel == "SHA256SUMS":
             continue
-        if os.path.islink(path):
+        mode = os.lstat(path).st_mode
+        if not stat.S_ISREG(mode):
             continue
         entries.append(rel)
 
@@ -260,7 +262,12 @@ with open(os.path.join(stage, "SHA256SUMS"), "w", encoding="utf-8") as out:
         with open(os.path.join(stage, rel), "rb") as fh:
             for chunk in iter(lambda: fh.read(1024 * 1024), b""):
                 digest.update(chunk)
-        out.write(f"{digest.hexdigest()}  ./{rel}\n")
+        manifest_path = f"./{rel}"
+        if "\\" in manifest_path or "\n" in manifest_path:
+            escaped_path = manifest_path.replace("\\", "\\\\").replace("\n", "\\n")
+            out.write(f"\\{digest.hexdigest()}  {escaped_path}\n")
+        else:
+            out.write(f"{digest.hexdigest()}  {manifest_path}\n")
 PY
 )
 

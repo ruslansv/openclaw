@@ -1,6 +1,6 @@
 // Docker migration helper tests cover host-state backup and restore invariants.
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -22,6 +22,7 @@ function runScript(script: string, args: string[], extraEnv: NodeJS.ProcessEnv =
       PATH: process.env.PATH ?? "",
       ...extraEnv,
     },
+    timeout: 30_000,
   });
 }
 
@@ -80,6 +81,10 @@ describe("openclaw Docker migration helpers", () => {
     await mkdir(repoRoot, { recursive: true });
     const { binDir, composePath, dockerLog } = await writeDockerStub(root, repoRoot);
     await writeFixtureFile(path.join(configDir, "openclaw.json"), '{"ok":true}\n');
+    await writeFixtureFile(path.join(configDir, "odd\nname.txt"), "newline-safe\n");
+    const fifoPath = path.join(configDir, "runtime.fifo");
+    const fifo = spawnSync("mkfifo", [fifoPath]);
+    expect(fifo.status).toBe(0);
     await writeFixtureFile(
       path.join(configDir, "extensions", "tracked-plugin", "package.json"),
       '{"name":"tracked-plugin"}\n',
@@ -162,6 +167,10 @@ describe("openclaw Docker migration helpers", () => {
     expect(readFileSync(path.join(restoredConfigDir, "openclaw.json"), "utf8")).toBe(
       '{"ok":true}\n',
     );
+    expect(readFileSync(path.join(restoredConfigDir, "odd\nname.txt"), "utf8")).toBe(
+      "newline-safe\n",
+    );
+    expect(lstatSync(path.join(restoredConfigDir, "runtime.fifo")).isFIFO()).toBe(true);
     expect(readFileSync(path.join(restoredWorkspaceDir, "scripts", "digest.js"), "utf8")).toBe(
       "console.log('ok');\n",
     );
@@ -206,6 +215,18 @@ describe("openclaw Docker migration helpers", () => {
     ).toBe('{"name":"local-plugin"}\n');
     expect(restore.stdout).toContain("plugins update --all");
     expect(statSync(path.join(repoRoot, ".env")).mode & 0o077).toBe(0);
+
+    const roundTripBackup = runScript(BACKUP_SCRIPT, [
+      "--repo-root",
+      repoRoot,
+      "--output-dir",
+      backupDir,
+      "--name",
+      "round-trip",
+      "--no-stop",
+    ]);
+    expect(roundTripBackup.stderr).toBe("");
+    expect(roundTripBackup.status).toBe(0);
   });
 
   it("restarts the gateway when a quiesced backup fails", async () => {

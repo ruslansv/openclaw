@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 
 const repoRoot = resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const dockerfilePath = join(repoRoot, "Dockerfile");
+const gatewayEntrypointPath = join(repoRoot, "scripts/docker/gateway-entrypoint.sh");
 const dockerInstallDocsPath = join(repoRoot, "docs/install/docker.md");
 const dockerignorePath = join(repoRoot, ".dockerignore");
 const dockerReleaseWorkflowPath = join(repoRoot, ".github/workflows/docker-release.yml");
@@ -21,6 +22,17 @@ function collapseDockerContinuations(dockerfile: string): string {
 }
 
 describe("Dockerfile", () => {
+  it("uses a root-owned PATH for privileged gateway startup", async () => {
+    const entrypoint = await readFile(gatewayEntrypointPath, "utf8");
+    const safePathIndex = entrypoint.indexOf(
+      'export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"',
+    );
+
+    expect(safePathIndex).toBeGreaterThan(-1);
+    expect(safePathIndex).toBeLessThan(entrypoint.indexOf("id -u"));
+    expect(entrypoint).toContain('exec env PATH="$RUNTIME_PATH" "$gosu_path" node "$@"');
+  });
+
   it("keeps local backup archives out of Docker build contexts", async () => {
     const dockerignore = await readFile(dockerignorePath, "utf8");
     expect(dockerignore).toMatch(/^backups$/m);

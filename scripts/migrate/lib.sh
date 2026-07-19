@@ -15,6 +15,9 @@ strip_quotes() {
     value="${value:1:${#value}-2}"
   elif [[ "${value}" == \'*\' && "${value}" == *\' ]]; then
     value="${value:1:${#value}-2}"
+    local escaped_single_quote="\\\\'"
+    local single_quote="'"
+    value="${value//$escaped_single_quote/$single_quote}"
   fi
   printf '%s' "$value"
 }
