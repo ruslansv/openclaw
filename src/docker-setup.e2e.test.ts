@@ -731,6 +731,33 @@ describe("scripts/docker/setup.sh", () => {
     expect(approvals.agents.main.allowlist).toEqual([{ pattern: "/usr/bin/uname" }]);
   });
 
+  it("rejects array-valued exec approval records without claiming alignment", async () => {
+    const activeSandbox = requireSandbox(sandbox);
+    await resetDockerLog(activeSandbox);
+    const configDir = join(activeSandbox.rootDir, "config-exec-policy-array");
+    const workspaceDir = join(activeSandbox.rootDir, "workspace-exec-policy-array");
+    const approvalsPath = join(configDir, "exec-approvals.json");
+    await mkdir(configDir, { recursive: true });
+    await writeFile(approvalsPath, JSON.stringify({ version: 1, defaults: [], agents: {} }));
+
+    const result = runDockerSetup(activeSandbox, {
+      OPENCLAW_CONFIG_DIR: configDir,
+      OPENCLAW_WORKSPACE_DIR: workspaceDir,
+      OPENCLAW_DOCKER_EXEC_SECURITY: "full",
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("defaults must be a JSON object");
+    expect(result.stdout).not.toContain("Aligned exec approvals defaults");
+    expect(JSON.parse(await readFile(approvalsPath, "utf8"))).toEqual({
+      version: 1,
+      defaults: [],
+      agents: {},
+    });
+    const log = await readDockerLog(activeSandbox);
+    expect(log).not.toContain("config set tools.exec.security full");
+  });
+
   it("precreates agent data dirs to avoid EACCES in container", async () => {
     const activeSandbox = requireSandbox(sandbox);
     const configDir = join(activeSandbox.rootDir, "config-agent-dirs");

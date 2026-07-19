@@ -55,10 +55,18 @@ if (!data || typeof data !== "object" || Array.isArray(data)) {
 }
 
 data.version ??= 1;
-data.defaults = data.defaults && typeof data.defaults === "object" ? data.defaults : {};
-data.agents = data.agents && typeof data.agents === "object" ? data.agents : {};
-data.agents.main =
-  data.agents.main && typeof data.agents.main === "object" ? data.agents.main : {};
+const asRecord = (value, label) => {
+  if (value == null) return {};
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(
+      \`Failed to parse \${approvalsPath}: \${label} must be a JSON object\`,
+    );
+  }
+  return value;
+};
+data.defaults = asRecord(data.defaults, "defaults");
+data.agents = asRecord(data.agents, "agents");
+data.agents.main = asRecord(data.agents.main, "agents.main");
 
 for (const target of [data.defaults, data.agents.main]) {
   if (security) target.security = security;

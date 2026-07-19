@@ -214,7 +214,7 @@ validate_exec_ask_value() {
 
 write_exec_approvals_policy() {
   local approvals_path="/home/node/.openclaw/exec-approvals.json"
-  local update_script='const fs=require("node:fs"); const [approvalsPath, security, ask, askFallback]=process.argv.slice(1); let data={}; if (fs.existsSync(approvalsPath)) { try { data=JSON.parse(fs.readFileSync(approvalsPath, "utf8")); } catch (error) { const message=error instanceof Error ? error.message : String(error); console.error(`Failed to parse ${approvalsPath}: ${message}`); process.exit(1); } } if (!data || typeof data !== "object" || Array.isArray(data)) { console.error(`Failed to parse ${approvalsPath}: expected a JSON object`); process.exit(1); } data.version ??= 1; data.defaults = data.defaults && typeof data.defaults === "object" ? data.defaults : {}; data.agents = data.agents && typeof data.agents === "object" ? data.agents : {}; data.agents.main = data.agents.main && typeof data.agents.main === "object" ? data.agents.main : {}; for (const target of [data.defaults, data.agents.main]) { if (security) target.security = security; if (ask) target.ask = ask; if (askFallback) target.askFallback = askFallback; } fs.writeFileSync(approvalsPath, `${JSON.stringify(data, null, 2)}\n`, "utf8");'
+  local update_script='const fs=require("node:fs"); const [approvalsPath, security, ask, askFallback]=process.argv.slice(1); let data={}; if (fs.existsSync(approvalsPath)) { try { data=JSON.parse(fs.readFileSync(approvalsPath, "utf8")); } catch (error) { const message=error instanceof Error ? error.message : String(error); console.error(`Failed to parse ${approvalsPath}: ${message}`); process.exit(1); } } if (!data || typeof data !== "object" || Array.isArray(data)) { console.error(`Failed to parse ${approvalsPath}: expected a JSON object`); process.exit(1); } const asRecord=(value,label)=>{ if (value == null) return {}; if (typeof value !== "object" || Array.isArray(value)) { console.error(`Failed to parse ${approvalsPath}: ${label} must be a JSON object`); process.exit(1); } return value; }; data.version ??= 1; data.defaults=asRecord(data.defaults,"defaults"); data.agents=asRecord(data.agents,"agents"); data.agents.main=asRecord(data.agents.main,"agents.main"); for (const target of [data.defaults, data.agents.main]) { if (security) target.security = security; if (ask) target.ask = ask; if (askFallback) target.askFallback = askFallback; } fs.writeFileSync(approvalsPath, `${JSON.stringify(data, null, 2)}\n`, "utf8");'
 
   # Keep approvals writes inside the container mount so reruns do not depend
   # on the host uid matching the image's node user.
@@ -232,13 +232,13 @@ configure_docker_exec_policy() {
   fi
 
   echo "Applying Docker exec policy defaults."
+  write_exec_approvals_policy
   if [[ -n "$DOCKER_EXEC_SECURITY" ]]; then
     set_config_value tools.exec.security "$DOCKER_EXEC_SECURITY"
   fi
   if [[ -n "$DOCKER_EXEC_ASK" ]]; then
     set_config_value tools.exec.ask "$DOCKER_EXEC_ASK"
   fi
-  write_exec_approvals_policy
   echo "Aligned exec approvals defaults in $OPENCLAW_CONFIG_DIR/exec-approvals.json."
 }
 
