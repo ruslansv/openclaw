@@ -1,6 +1,14 @@
 // Docker migration helper tests cover host-state backup and restore invariants.
 import { spawnSync } from "node:child_process";
-import { existsSync, lstatSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { chmod, mkdir, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -80,7 +88,7 @@ exec /bin/mv "$@"
 
 describe("openclaw Docker migration helpers", () => {
   beforeEach(() => {
-    tempRoot = tempDirs.make("openclaw-migrate-helper-");
+    tempRoot = realpathSync(tempDirs.make("openclaw-migrate-helper-"));
   });
 
   it("backs up and restores config, workspace, auth-profile secrets, and archive permissions", async () => {
@@ -461,6 +469,42 @@ esac
     expect(readFileSync(path.join(nestedWorkspaceDir, "scripts", "digest.js"), "utf8")).toBe(
       "console.log('ok');\n",
     );
+
+    const physicalConfigDir = path.join(root, "physical-target-config");
+    const symlinkedConfigDir = path.join(root, "symlinked-target-config");
+    const physicalWorkspaceDir = path.join(root, "physical-target-workspace");
+    await writeFixtureFile(path.join(physicalConfigDir, "stale.json"), "{}\n");
+    await symlink(physicalConfigDir, symlinkedConfigDir, "dir");
+    const symlinkedRootRestore = runScript(
+      RESTORE_SCRIPT,
+      [
+        "--repo-root",
+        repoRoot,
+        "--archive",
+        archivePath,
+        "--env-file",
+        path.join(root, "symlinked-root.env"),
+        "--config-dir",
+        symlinkedConfigDir,
+        "--workspace-dir",
+        physicalWorkspaceDir,
+        "--auth-profile-secret-dir",
+        path.join(root, "symlinked-root-auth-secrets"),
+        "--no-stop",
+      ],
+      {
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        UNAME_MACHINE: "x86_64",
+        UNAME_SYSTEM: "Linux",
+      },
+    );
+    expect(symlinkedRootRestore.stderr).toBe("");
+    expect(symlinkedRootRestore.status).toBe(0);
+    expect(lstatSync(symlinkedConfigDir).isSymbolicLink()).toBe(true);
+    expect(readFileSync(path.join(physicalConfigDir, "openclaw.json"), "utf8")).toBe(
+      '{"ok":true}\n',
+    );
+    expect(existsSync(path.join(physicalConfigDir, "stale.json"))).toBe(false);
 
     const roundTripBackup = runScript(BACKUP_SCRIPT, [
       "--repo-root",

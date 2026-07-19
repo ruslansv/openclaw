@@ -41,7 +41,9 @@ import os
 import sys
 
 path = sys.argv[1]
-print(os.path.abspath(os.path.expanduser(path)))
+# Resolve existing symlink components so backup and restore operate on the same
+# physical tree instead of replacing a symlinked storage root with a directory.
+print(os.path.realpath(os.path.abspath(os.path.expanduser(path))))
 PY
 }
 
