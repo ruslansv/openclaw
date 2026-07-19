@@ -394,13 +394,16 @@ RUN set -eux; \
   gog --help >/dev/null
 
 # Install Linuxbrew in a node-writable prefix so brew installs work at runtime.
-# Pin the Homebrew source tarball for reproducible Docker builds.
+# Keep Git metadata so Homebrew's runtime update/install flow remains usable.
 ARG HOMEBREW_BREW_TAG=5.1.3
+ARG HOMEBREW_BREW_COMMIT=3a946229d190966cd725d5cc65e272d279a398ed
 RUN set -eux; \
-  curl -fsSL "https://github.com/Homebrew/brew/archive/refs/tags/${HOMEBREW_BREW_TAG}.tar.gz" | tar xz --strip-components=1 -C "${HOMEBREW_REPOSITORY}"; \
+  git clone --depth 1 --branch "${HOMEBREW_BREW_TAG}" https://github.com/Homebrew/brew.git "${HOMEBREW_REPOSITORY}"; \
+  test "$(git -C "${HOMEBREW_REPOSITORY}" rev-parse HEAD)" = "${HOMEBREW_BREW_COMMIT}"; \
   ln -sf ../Homebrew/bin/brew "${HOMEBREW_PREFIX}/bin/brew"; \
   chown -R node:node /home/linuxbrew
-RUN gosu node brew --version >/dev/null
+RUN gosu node git -C "${HOMEBREW_REPOSITORY}" rev-parse --is-inside-work-tree | grep -qx true && \
+    gosu node brew --version >/dev/null
 
 # Optionally install Docker CLI for sandbox container management.
 # Build with: docker build --build-arg OPENCLAW_INSTALL_DOCKER_CLI=1 ...
