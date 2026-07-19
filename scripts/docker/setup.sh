@@ -957,6 +957,7 @@ run_prestart_gateway --user root --entrypoint sh openclaw-gateway -c \
      /usr/bin/find -P "$root" -xdev -execdir /usr/bin/chown -h node:node {} +; \
    done; \
    /usr/bin/find -P /home/node/.openclaw -xdev -path /home/node/.openclaw/workspace -prune -o -execdir /usr/bin/chown -h node:node {} +; \
+   /usr/bin/chown -h node:node /home/node/.openclaw/workspace; \
    /usr/bin/chown -h node:node /home/node/.config; \
    /usr/bin/find -P /home/node/.config/openclaw -xdev -execdir /usr/bin/chown -h node:node {} +; \
    if [ -d /home/node/.openclaw/workspace/.openclaw ] && [ ! -L /home/node/.openclaw/workspace/.openclaw ]; then \

@@ -772,6 +772,7 @@ describe("scripts/docker/setup.sh", () => {
     );
     expect(log).toContain("/usr/bin/chown -h node:node /home/node/.config");
     expect(log).toContain(stateRepair);
+    expect(log).toContain("/usr/bin/chown -h node:node /home/node/.openclaw/workspace");
     expect(log).not.toContain(noFollowOwnershipRepair("/home/node/.openclaw"));
     expect(log).toContain(noFollowOwnershipRepair("/home/node/.config/openclaw"));
     expect(log).toContain("[ ! -L /home/node/.openclaw/workspace/.openclaw ]");
@@ -1152,6 +1153,7 @@ describe("scripts/docker/setup.sh", () => {
     );
     expect(compose).toContain("/usr/bin/find -P /home/node/.openclaw -xdev \\");
     expect(compose).toContain("-path /home/node/.openclaw/workspace -prune -o \\");
+    expect(compose).toContain("/usr/bin/chown -h node:node /home/node/.openclaw/workspace");
     expect(compose).not.toContain(noFollowOwnershipRepair("/home/node/.openclaw"));
     expect(compose).toContain("[ ! -L /home/node/.openclaw/workspace/.openclaw ]");
     expect(compose).not.toContain("chown -R");
