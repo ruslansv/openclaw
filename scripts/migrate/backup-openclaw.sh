@@ -180,17 +180,44 @@ mkdir -p "$stage/payload/config" "$stage/payload/workspace" "$stage/payload/repo
 if [[ $STOP_FIRST -eq 1 ]]; then
   require_cmd docker
   [[ -f "$compose_file" ]] || fail "Compose file not found at $compose_file (use --no-stop only if the gateway is already stopped)."
-  if ! gateway_container_id="$(
-    docker compose -f "$compose_file" ps --status running -q openclaw-gateway 2>/dev/null
+  if ! gateway_container_ids="$(
+    docker compose -f "$compose_file" ps --all -q openclaw-gateway 2>/dev/null
   )"; then
     fail "Failed to inspect openclaw-gateway. Fix Docker/Compose first or use --no-stop only if the gateway is already stopped."
   fi
-  if [[ -n "$gateway_container_id" ]]; then
+  gateway_is_active=0
+  while IFS= read -r gateway_container_id; do
+    [[ -n "$gateway_container_id" ]] || continue
+    if ! gateway_state="$(docker inspect --format '{{.State.Status}}' "$gateway_container_id")"; then
+      fail "Failed to inspect openclaw-gateway container state: $gateway_container_id"
+    fi
+    case "$gateway_state" in
+      running | restarting)
+        gateway_is_active=1
+        ;;
+      paused)
+        gateway_is_active=1
+        docker unpause "$gateway_container_id" >/dev/null || fail "Failed to unpause openclaw-gateway before backup."
+        ;;
+    esac
+  done <<<"$gateway_container_ids"
+  if [[ $gateway_is_active -eq 1 ]]; then
     restart_gateway=1
     echo "==> Stopping gateway container for a consistent backup"
     if ! docker compose -f "$compose_file" stop openclaw-gateway >/dev/null; then
       fail "Failed to stop openclaw-gateway; no backup was created."
     fi
+    while IFS= read -r gateway_container_id; do
+      [[ -n "$gateway_container_id" ]] || continue
+      if ! gateway_state="$(docker inspect --format '{{.State.Status}}' "$gateway_container_id")"; then
+        fail "Failed to verify stopped openclaw-gateway state: $gateway_container_id"
+      fi
+      case "$gateway_state" in
+        running | restarting | paused)
+          fail "openclaw-gateway remained active after stop (state=$gateway_state); no backup was created."
+          ;;
+      esac
+    done <<<"$gateway_container_ids"
   fi
 fi
 

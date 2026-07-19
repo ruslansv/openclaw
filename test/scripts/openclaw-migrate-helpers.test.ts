@@ -38,8 +38,10 @@ function dotenvLiteral(value: string) {
 async function writeDockerStub(root: string, repoRoot: string) {
   const binDir = path.join(root, "bin");
   const dockerLog = path.join(root, "docker.log");
+  const dockerStateFile = path.join(root, "docker-state");
   const composePath = path.join(repoRoot, "docker-compose.yml");
   await mkdir(binDir, { recursive: true });
+  await writeFile(dockerStateFile, "restarting\n");
   await writeFile(composePath, "services:\n  openclaw-gateway:\n    image: test\n");
   const dockerStub = path.join(binDir, "docker");
   await writeFile(
@@ -48,15 +50,19 @@ async function writeDockerStub(root: string, repoRoot: string) {
 set -eu
 printf '%s\\n' "$*" >> "$DOCKER_LOG"
 case " $* " in
-  *" ps --status running -q openclaw-gateway "*) printf '%s\\n' test-container ;;
+  *" ps --all -q openclaw-gateway "*) printf '%s\\n' test-container ;;
+  *" inspect --format {{.State.Status}} test-container "*) cat "$DOCKER_STATE_FILE" ;;
+  *" unpause test-container "*) printf '%s\\n' running > "$DOCKER_STATE_FILE" ;;
   *" stop openclaw-gateway "*)
+    printf '%s\\n' exited > "$DOCKER_STATE_FILE"
     if [ -n "\${DOCKER_REMOVE_ON_STOP:-}" ]; then rm -rf -- "$DOCKER_REMOVE_ON_STOP"; fi
     ;;
+  *" start openclaw-gateway "*) printf '%s\\n' running > "$DOCKER_STATE_FILE" ;;
 esac
 `,
   );
   await chmod(dockerStub, 0o755);
-  return { binDir, composePath, dockerLog };
+  return { binDir, composePath, dockerLog, dockerStateFile };
 }
 
 describe("openclaw Docker migration helpers", () => {
@@ -79,7 +85,10 @@ describe("openclaw Docker migration helpers", () => {
     const restoredAuthProfileSecretDir = path.join(root, "restored-$tenant's-auth-secrets");
     const backupDir = path.join(root, "backups");
     await mkdir(repoRoot, { recursive: true });
-    const { binDir, composePath, dockerLog } = await writeDockerStub(root, repoRoot);
+    const { binDir, composePath, dockerLog, dockerStateFile } = await writeDockerStub(
+      root,
+      repoRoot,
+    );
     await writeFixtureFile(path.join(configDir, "openclaw.json"), '{"ok":true}\n');
     await writeFixtureFile(path.join(configDir, "odd\nname.txt"), "newline-safe\n");
     const fifoPath = path.join(configDir, "runtime.fifo");
@@ -139,6 +148,7 @@ esac
       ["--repo-root", repoRoot, "--output-dir", backupDir, "--name", "sample"],
       {
         DOCKER_LOG: dockerLog,
+        DOCKER_STATE_FILE: dockerStateFile,
         PATH: `${binDir}:${process.env.PATH ?? ""}`,
         UNAME_MACHINE: "x86_64",
         UNAME_SYSTEM: "Linux",
@@ -150,7 +160,8 @@ esac
     const dockerCalls = readFileSync(dockerLog, "utf8");
     const stopCall = `compose -f ${composePath} stop openclaw-gateway`;
     const startCall = `compose -f ${composePath} start openclaw-gateway`;
-    expect(dockerCalls).toContain("ps --status running -q openclaw-gateway");
+    expect(dockerCalls).toContain("ps --all -q openclaw-gateway");
+    expect(dockerCalls).toContain("inspect --format {{.State.Status}} test-container");
     expect(dockerCalls.indexOf(stopCall)).toBeGreaterThanOrEqual(0);
     expect(dockerCalls.indexOf(startCall)).toBeGreaterThan(dockerCalls.indexOf(stopCall));
 
@@ -325,7 +336,10 @@ esac
     await mkdir(repoRoot, { recursive: true });
     await writeFixtureFile(path.join(configDir, "openclaw.json"), "{}\n");
     await writeFixtureFile(path.join(workspaceDir, "digest.js"), "export {};\n");
-    const { binDir, composePath, dockerLog } = await writeDockerStub(root, repoRoot);
+    const { binDir, composePath, dockerLog, dockerStateFile } = await writeDockerStub(
+      root,
+      repoRoot,
+    );
 
     const backup = runScript(
       BACKUP_SCRIPT,
@@ -344,6 +358,7 @@ esac
       {
         DOCKER_LOG: dockerLog,
         DOCKER_REMOVE_ON_STOP: configDir,
+        DOCKER_STATE_FILE: dockerStateFile,
         PATH: `${binDir}:${process.env.PATH ?? ""}`,
       },
     );
