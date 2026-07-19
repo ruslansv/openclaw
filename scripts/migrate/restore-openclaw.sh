@@ -175,6 +175,13 @@ echo "==> Restoring config"
 config_rsync_args=(-a)
 workspace_rsync_args=(-a)
 plugin_payload_backup=""
+# A workspace can move from outside the config tree into its usual nested
+# location. Exclude that destination-relative subtree from the config payload
+# so stale files there cannot merge with the authoritative workspace payload.
+if [[ "$WORKSPACE_DIR" == "$CONFIG_DIR"/* ]]; then
+  target_workspace_relative="${WORKSPACE_DIR#"$CONFIG_DIR"/}"
+  config_rsync_args+=(--exclude="/${target_workspace_relative}/")
+fi
 if [[ $arch_mismatch -eq 1 ]]; then
   # The destination trees were moved above, so these exclusions cannot leave
   # stale source-architecture plugin roots active after the restore.

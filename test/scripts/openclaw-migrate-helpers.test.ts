@@ -100,6 +100,7 @@ describe("openclaw Docker migration helpers", () => {
     );
     await writeFixtureFile(path.join(configDir, "npm", "projects", "native.bin"), "source\n");
     await writeFixtureFile(path.join(configDir, "git", "tracked-plugin", "native.bin"), "source\n");
+    await writeFixtureFile(path.join(configDir, "workspace", "stale-from-config.txt"), "stale\n");
     await writeFixtureFile(path.join(workspaceDir, "scripts", "digest.js"), "console.log('ok');\n");
     await writeFixtureFile(
       path.join(workspaceDir, ".openclaw", "extensions", "local-plugin", "package.json"),
@@ -280,6 +281,36 @@ esac
     );
     expect(previousEnvName).toBeDefined();
     expect(statSync(path.join(repoRoot, previousEnvName ?? "missing")).mode & 0o077).toBe(0);
+
+    const nestedConfigDir = path.join(root, "nested-target-config");
+    const nestedWorkspaceDir = path.join(nestedConfigDir, "workspace");
+    const nestedRestore = runScript(
+      RESTORE_SCRIPT,
+      [
+        "--repo-root",
+        repoRoot,
+        "--archive",
+        archivePath,
+        "--config-dir",
+        nestedConfigDir,
+        "--workspace-dir",
+        nestedWorkspaceDir,
+        "--auth-profile-secret-dir",
+        path.join(root, "nested-target-auth-secrets"),
+        "--no-stop",
+      ],
+      {
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        UNAME_MACHINE: "x86_64",
+        UNAME_SYSTEM: "Linux",
+      },
+    );
+    expect(nestedRestore.stderr).toBe("");
+    expect(nestedRestore.status).toBe(0);
+    expect(existsSync(path.join(nestedWorkspaceDir, "stale-from-config.txt"))).toBe(false);
+    expect(readFileSync(path.join(nestedWorkspaceDir, "scripts", "digest.js"), "utf8")).toBe(
+      "console.log('ok');\n",
+    );
 
     const roundTripBackup = runScript(BACKUP_SCRIPT, [
       "--repo-root",
