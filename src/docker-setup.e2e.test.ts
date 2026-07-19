@@ -339,6 +339,9 @@ describe("scripts/docker/setup.sh", () => {
         (line) => !line.includes("DOCKER_BUILDKIT=1"),
       );
       expect(buildLinesWithoutBuildKit).toStrictEqual([]);
+      expect(result.stdout).toContain(
+        `docker compose -f ${join(activeSandbox.rootDir, "docker-compose.yml")} -f ${join(activeSandbox.rootDir, "docker-compose.sandbox.yml")}`,
+      );
     });
   });
 

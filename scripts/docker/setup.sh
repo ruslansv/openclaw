@@ -1079,6 +1079,7 @@ YAML
 YAML
   fi
   COMPOSE_ARGS+=("-f" "$SANDBOX_COMPOSE_FILE")
+  COMPOSE_HINT+=" -f ${SANDBOX_COMPOSE_FILE}"
   echo "==> Sandbox: added Docker socket mount"
 fi
 

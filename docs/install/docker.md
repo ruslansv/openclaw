@@ -783,12 +783,20 @@ the target host.
 
 ### 4) Rebuild and validate on the target architecture
 
-Always rebuild on Apple Silicon:
+Export the restored `OPENCLAW_*` values, then run setup so the image is rebuilt
+natively and every required extra or sandbox Compose overlay is regenerated:
 
 ```bash
-docker compose up -d --build --force-recreate openclaw-gateway
-docker compose run --rm openclaw-cli health
-docker compose run --rm openclaw-cli channels status --probe
+./scripts/docker/setup.sh
+```
+
+At completion, setup prints the exact `docker compose -f ...` prefix for the
+active deployment. Use that full prefix, including every printed `-f` file, for
+validation instead of invoking the base Compose file alone:
+
+```text
+<full-compose-command> run --rm openclaw-cli health
+<full-compose-command> run --rm openclaw-cli channels status --probe
 ```
 
 ### Architecture migration note
