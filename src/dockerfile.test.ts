@@ -674,8 +674,15 @@ describe("Dockerfile", () => {
     expect(dockerfile).toContain("checksums.txt");
     expect(dockerfile).toContain("ARG HOMEBREW_BREW_TAG=5.1.3");
     expect(dockerfile).toContain(
-      "https://github.com/Homebrew/brew/archive/refs/tags/${HOMEBREW_BREW_TAG}.tar.gz",
+      "ARG HOMEBREW_BREW_COMMIT=3a946229d190966cd725d5cc65e272d279a398ed",
     );
+    expect(dockerfile).toContain(
+      'gosu node git clone --depth 1 --branch "${HOMEBREW_BREW_TAG}" https://github.com/Homebrew/brew.git',
+    );
+    expect(dockerfile).toContain(
+      'test "$(gosu node git -C "${HOMEBREW_REPOSITORY}" rev-parse HEAD)" = "${HOMEBREW_BREW_COMMIT}"',
+    );
+    expect(dockerfile).not.toContain("https://github.com/Homebrew/brew/archive/");
     expect(dockerfile).not.toContain("https://github.com/Homebrew/brew/tarball/master");
   });
 });
