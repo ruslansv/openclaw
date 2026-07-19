@@ -133,6 +133,28 @@ CONFIG_DIR="$(resolve_abs_path "$CONFIG_DIR")"
 WORKSPACE_DIR="$(resolve_abs_path "$WORKSPACE_DIR")"
 AUTH_PROFILE_SECRET_DIR="$(resolve_abs_path "$AUTH_PROFILE_SECRET_DIR")"
 
+for restore_dir in "$CONFIG_DIR" "$WORKSPACE_DIR" "$AUTH_PROFILE_SECRET_DIR"; do
+  [[ "$restore_dir" != "/" ]] || fail "Restore directories must not be the filesystem root"
+done
+if [[ "$CONFIG_DIR" == "$WORKSPACE_DIR" || "$CONFIG_DIR" == "$WORKSPACE_DIR"/* ]]; then
+  fail "Config and workspace directories have an unsupported overlap: $CONFIG_DIR and $WORKSPACE_DIR"
+fi
+if [[
+  "$AUTH_PROFILE_SECRET_DIR" == "$CONFIG_DIR" ||
+  "$AUTH_PROFILE_SECRET_DIR" == "$CONFIG_DIR"/* ||
+  "$CONFIG_DIR" == "$AUTH_PROFILE_SECRET_DIR"/* ||
+  "$AUTH_PROFILE_SECRET_DIR" == "$WORKSPACE_DIR" ||
+  "$AUTH_PROFILE_SECRET_DIR" == "$WORKSPACE_DIR"/* ||
+  "$WORKSPACE_DIR" == "$AUTH_PROFILE_SECRET_DIR"/*
+]]; then
+  fail "Auth-profile secret directory must not overlap config or workspace directories"
+fi
+for restore_dir in "$CONFIG_DIR" "$WORKSPACE_DIR" "$AUTH_PROFILE_SECRET_DIR"; do
+  if [[ "$ENV_FILE" == "$restore_dir" || "$ENV_FILE" == "$restore_dir"/* ]]; then
+    fail "Env file must be outside restored directories: $ENV_FILE"
+  fi
+done
+
 source_arch="$(grep -E '^source_arch=' "$tmpdir/meta/backup.env" | cut -d= -f2- || true)"
 target_arch="$(uname -m)"
 if [[ "$(uname -s)" == "Darwin" ]] && command -v sysctl >/dev/null 2>&1; then
@@ -147,29 +169,136 @@ if [[ -n "$source_arch" && "$source_arch" != "$target_arch" ]]; then
   arch_mismatch=1
 fi
 
-if [[ $STOP_FIRST -eq 1 ]] && command -v docker >/dev/null 2>&1; then
-  compose_file="$REPO_ROOT/docker-compose.yml"
-  [[ -f "$compose_file" ]] || fail "Compose file not found at $compose_file (use --no-stop to skip stopping the gateway)."
-  echo "==> Stopping gateway container"
-  if ! docker compose -f "$compose_file" stop openclaw-gateway >/dev/null 2>&1; then
-    fail "Failed to stop openclaw-gateway. Fix Docker/Compose first or rerun with --no-stop if the gateway is already stopped."
-  fi
-fi
-
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$(dirname "$CONFIG_DIR")" "$(dirname "$WORKSPACE_DIR")" "$(dirname "$AUTH_PROFILE_SECRET_DIR")"
 
-if [[ -d "$CONFIG_DIR" ]]; then
-  mv "$CONFIG_DIR" "${CONFIG_DIR}.pre-restore-${timestamp}"
-fi
-if [[ -d "$WORKSPACE_DIR" ]]; then
-  mv "$WORKSPACE_DIR" "${WORKSPACE_DIR}.pre-restore-${timestamp}"
-fi
-if [[ -d "$AUTH_PROFILE_SECRET_DIR" && -d "$tmpdir/payload/auth-profile-secrets" ]]; then
-  mv "$AUTH_PROFILE_SECRET_DIR" "${AUTH_PROFILE_SECRET_DIR}.pre-restore-${timestamp}"
+config_backup="${CONFIG_DIR}.pre-restore-${timestamp}"
+workspace_backup="${WORKSPACE_DIR}.pre-restore-${timestamp}"
+auth_profile_secret_backup="${AUTH_PROFILE_SECRET_DIR}.pre-restore-${timestamp}"
+config_staging=""
+workspace_staging=""
+auth_profile_secret_staging=""
+env_staging=""
+env_destination=""
+env_previous_copy=""
+env_previous_backup=""
+plugin_payload_created=0
+swap_started=0
+restore_committed=0
+config_original_moved=0
+workspace_original_moved=0
+auth_profile_secret_original_moved=0
+config_installed=0
+workspace_installed=0
+auth_profile_secret_installed=0
+env_installed=0
+env_had_original=0
+gateway_restore_on_failure=0
+paused_gateway_container_ids=()
+
+workspace_is_nested=0
+target_workspace_relative=""
+if [[ "$WORKSPACE_DIR" == "$CONFIG_DIR"/* ]]; then
+  workspace_is_nested=1
+  target_workspace_relative="${WORKSPACE_DIR#"$CONFIG_DIR"/}"
 fi
 
-mkdir -p "$CONFIG_DIR" "$WORKSPACE_DIR" "$AUTH_PROFILE_SECRET_DIR"
+restore_cleanup() {
+  local status=$?
+  trap - EXIT INT TERM
+  # Rollback is best-effort across every tree; one failed restoration must not
+  # prevent attempts to put the remaining active paths back in place.
+  set +e
+  if [[ $status -ne 0 && $swap_started -eq 1 && $restore_committed -eq 0 ]]; then
+    echo "==> Restore failed; rolling back active directories" >&2
+    if [[ $config_installed -eq 1 ]]; then
+      rm -rf -- "$CONFIG_DIR"
+    fi
+    if [[ $workspace_is_nested -eq 0 && $workspace_installed -eq 1 ]]; then
+      rm -rf -- "$WORKSPACE_DIR"
+    fi
+    if [[ $auth_profile_secret_installed -eq 1 ]]; then
+      rm -rf -- "$AUTH_PROFILE_SECRET_DIR"
+    fi
+    if [[ $config_original_moved -eq 1 ]]; then
+      mv "$config_backup" "$CONFIG_DIR"
+    fi
+    if [[ $workspace_original_moved -eq 1 ]]; then
+      mv "$workspace_backup" "$WORKSPACE_DIR"
+    fi
+    if [[ $auth_profile_secret_original_moved -eq 1 ]]; then
+      mv "$auth_profile_secret_backup" "$AUTH_PROFILE_SECRET_DIR"
+    fi
+    if [[ $env_installed -eq 1 ]]; then
+      if [[ $env_had_original -eq 1 ]]; then
+        cp -p "$env_previous_copy" "$env_destination"
+      else
+        rm -f -- "$env_destination"
+      fi
+    fi
+    if [[ -n "$env_previous_backup" ]]; then
+      rm -f -- "$env_previous_backup"
+    fi
+  fi
+  if [[ $status -ne 0 && $gateway_restore_on_failure -eq 1 ]]; then
+    echo "==> Restoring gateway state after failed restore" >&2
+    if ! docker compose -f "$REPO_ROOT/docker-compose.yml" start openclaw-gateway >/dev/null; then
+      echo "ERROR: Active data was rolled back, but openclaw-gateway could not be restarted." >&2
+      status=1
+    else
+      for gateway_container_id in "${paused_gateway_container_ids[@]}"; do
+        if ! gateway_state="$(docker inspect --format '{{.State.Status}}' "$gateway_container_id")"; then
+          echo "ERROR: Restored gateway state could not be inspected." >&2
+          status=1
+          continue
+        fi
+        if [[ "$gateway_state" != "paused" ]] && ! docker pause "$gateway_container_id" >/dev/null; then
+          echo "ERROR: openclaw-gateway could not be returned to its paused state." >&2
+          status=1
+        fi
+      done
+    fi
+  fi
+  if [[ $status -ne 0 && $plugin_payload_created -eq 1 ]]; then
+    rm -rf -- "$plugin_payload_backup"
+  fi
+  for staging_path in \
+    "$config_staging" "$workspace_staging" "$auth_profile_secret_staging"; do
+    if [[ -n "$staging_path" ]]; then
+      rm -rf -- "$staging_path"
+    fi
+  done
+  if [[ -n "$env_staging" ]]; then
+    rm -f -- "$env_staging"
+  fi
+  rm -rf -- "$tmpdir"
+  exit "$status"
+}
+trap - EXIT
+trap restore_cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+[[ ! -e "$config_backup" ]] || fail "Pre-restore snapshot already exists: $config_backup"
+if [[ $workspace_is_nested -eq 0 ]]; then
+  [[ ! -e "$workspace_backup" ]] || fail "Pre-restore snapshot already exists: $workspace_backup"
+fi
+if [[ -d "$tmpdir/payload/auth-profile-secrets" ]]; then
+  [[ ! -e "$auth_profile_secret_backup" ]] || fail "Pre-restore snapshot already exists: $auth_profile_secret_backup"
+fi
+
+# Build complete replacement trees beside their destinations. Nothing under the
+# active paths is moved until every archive payload has copied successfully.
+config_staging="$(mktemp -d "${CONFIG_DIR}.restore-staging-${timestamp}.XXXXXX")"
+if [[ $workspace_is_nested -eq 1 ]]; then
+  workspace_staging="$config_staging/$target_workspace_relative"
+  mkdir -p "$workspace_staging"
+else
+  workspace_staging="$(mktemp -d "${WORKSPACE_DIR}.restore-staging-${timestamp}.XXXXXX")"
+fi
+if [[ -d "$tmpdir/payload/auth-profile-secrets" ]]; then
+  auth_profile_secret_staging="$(mktemp -d "${AUTH_PROFILE_SECRET_DIR}.restore-staging-${timestamp}.XXXXXX")"
+fi
 
 echo "==> Restoring config"
 config_rsync_args=(-a)
@@ -178,19 +307,20 @@ plugin_payload_backup=""
 # A workspace can move from outside the config tree into its usual nested
 # location. Exclude that destination-relative subtree from the config payload
 # so stale files there cannot merge with the authoritative workspace payload.
-if [[ "$WORKSPACE_DIR" == "$CONFIG_DIR"/* ]]; then
-  target_workspace_relative="${WORKSPACE_DIR#"$CONFIG_DIR"/}"
+if [[ $workspace_is_nested -eq 1 ]]; then
   config_rsync_args+=(--exclude="/${target_workspace_relative}/")
 fi
 if [[ $arch_mismatch -eq 1 ]]; then
-  # The destination trees were moved above, so these exclusions cannot leave
-  # stale source-architecture plugin roots active after the restore.
+  # The replacement trees start empty, so these exclusions cannot leave stale
+  # source-architecture plugin roots active after the restore.
   config_rsync_args+=(--exclude=/extensions/ --exclude=/git/ --exclude=/npm/)
   workspace_rsync_args+=(--exclude=/.openclaw/extensions/)
 
   source_arch_label="${source_arch//[^A-Za-z0-9._-]/_}"
   plugin_payload_backup="${CONFIG_DIR}.source-arch-plugin-state-${source_arch_label}-${timestamp}"
+  [[ ! -e "$plugin_payload_backup" ]] || fail "Source-architecture plugin snapshot already exists: $plugin_payload_backup"
   mkdir -p "$plugin_payload_backup/config" "$plugin_payload_backup/workspace/.openclaw"
+  plugin_payload_created=1
   for relative_dir in extensions git npm; do
     if [[ -d "$tmpdir/payload/config/$relative_dir" ]]; then
       rsync -a \
@@ -204,14 +334,14 @@ if [[ $arch_mismatch -eq 1 ]]; then
       "$plugin_payload_backup/workspace/.openclaw/extensions/"
   fi
 fi
-rsync "${config_rsync_args[@]}" "$tmpdir/payload/config/" "$CONFIG_DIR/"
+rsync "${config_rsync_args[@]}" "$tmpdir/payload/config/" "$config_staging/"
 
 echo "==> Restoring workspace"
-rsync "${workspace_rsync_args[@]}" "$tmpdir/payload/workspace/" "$WORKSPACE_DIR/"
+rsync "${workspace_rsync_args[@]}" "$tmpdir/payload/workspace/" "$workspace_staging/"
 
 if [[ -d "$tmpdir/payload/auth-profile-secrets" ]]; then
   echo "==> Restoring auth-profile secret directory"
-  rsync -a "$tmpdir/payload/auth-profile-secrets/" "$AUTH_PROFILE_SECRET_DIR/"
+  rsync -a "$tmpdir/payload/auth-profile-secrets/" "$auth_profile_secret_staging/"
 fi
 
 write_restored_env() {
@@ -282,17 +412,108 @@ PY
 if [[ -f "$tmpdir/payload/repo/.env" ]]; then
   if [[ $APPLY_ENV -eq 1 ]]; then
     mkdir -p "$(dirname "$ENV_FILE")"
+    env_destination="$ENV_FILE"
+    env_previous_backup="${ENV_FILE}.pre-restore-${timestamp}"
+    [[ ! -e "$env_previous_backup" ]] || fail "Pre-restore env snapshot already exists: $env_previous_backup"
     if [[ -f "$ENV_FILE" ]]; then
-      cp "$ENV_FILE" "${ENV_FILE}.pre-restore-${timestamp}"
-      chmod 600 "${ENV_FILE}.pre-restore-${timestamp}"
+      env_had_original=1
     fi
-    write_restored_env "$tmpdir/payload/repo/.env" "$ENV_FILE"
-    chmod 600 "$ENV_FILE"
-    echo "==> Applied backed up env file to $ENV_FILE"
   else
     mkdir -p "$(dirname "$ENV_FILE")"
-    write_restored_env "$tmpdir/payload/repo/.env" "${ENV_FILE}.from-backup"
-    chmod 600 "${ENV_FILE}.from-backup"
+    env_destination="${ENV_FILE}.from-backup"
+    if [[ -f "$env_destination" ]]; then
+      env_had_original=1
+    fi
+  fi
+  env_staging="$(mktemp "$(dirname "$env_destination")/.${env_destination##*/}.restore-${timestamp}.XXXXXX")"
+  write_restored_env "$tmpdir/payload/repo/.env" "$env_staging"
+  chmod 600 "$env_staging"
+fi
+
+if [[ $STOP_FIRST -eq 1 ]] && command -v docker >/dev/null 2>&1; then
+  compose_file="$REPO_ROOT/docker-compose.yml"
+  [[ -f "$compose_file" ]] || fail "Compose file not found at $compose_file (use --no-stop to skip stopping the gateway)."
+  if ! gateway_container_ids="$(docker compose -f "$compose_file" ps --all -q openclaw-gateway 2>/dev/null)"; then
+    fail "Failed to inspect openclaw-gateway. Fix Docker/Compose first or use --no-stop only if the gateway is already stopped."
+  fi
+  gateway_is_active=0
+  while IFS= read -r gateway_container_id; do
+    [[ -n "$gateway_container_id" ]] || continue
+    if ! gateway_state="$(docker inspect --format '{{.State.Status}}' "$gateway_container_id")"; then
+      fail "Failed to inspect openclaw-gateway container state: $gateway_container_id"
+    fi
+    case "$gateway_state" in
+      running | restarting)
+        gateway_is_active=1
+        ;;
+      paused)
+        gateway_is_active=1
+        paused_gateway_container_ids+=("$gateway_container_id")
+        ;;
+    esac
+  done <<<"$gateway_container_ids"
+  if [[ $gateway_is_active -eq 1 ]]; then
+    gateway_restore_on_failure=1
+    for gateway_container_id in "${paused_gateway_container_ids[@]}"; do
+      docker unpause "$gateway_container_id" >/dev/null || fail "Failed to unpause openclaw-gateway before restore."
+    done
+    echo "==> Stopping gateway container"
+    if ! docker compose -f "$compose_file" stop openclaw-gateway >/dev/null 2>&1; then
+      fail "Failed to stop openclaw-gateway. Fix Docker/Compose first or rerun with --no-stop if the gateway is already stopped."
+    fi
+  fi
+fi
+
+# All replacement data is complete. The remaining same-filesystem renames are
+# covered by restore_cleanup so a failed swap restores every active tree.
+swap_started=1
+if [[ -d "$CONFIG_DIR" ]]; then
+  mv "$CONFIG_DIR" "$config_backup"
+  config_original_moved=1
+fi
+if [[ $workspace_is_nested -eq 0 && -d "$WORKSPACE_DIR" ]]; then
+  mv "$WORKSPACE_DIR" "$workspace_backup"
+  workspace_original_moved=1
+fi
+if [[ -n "$auth_profile_secret_staging" && -d "$AUTH_PROFILE_SECRET_DIR" ]]; then
+  mv "$AUTH_PROFILE_SECRET_DIR" "$auth_profile_secret_backup"
+  auth_profile_secret_original_moved=1
+fi
+
+mv "$config_staging" "$CONFIG_DIR"
+config_staging=""
+config_installed=1
+if [[ $workspace_is_nested -eq 0 ]]; then
+  mv "$workspace_staging" "$WORKSPACE_DIR"
+  workspace_staging=""
+  workspace_installed=1
+fi
+if [[ -n "$auth_profile_secret_staging" ]]; then
+  mv "$auth_profile_secret_staging" "$AUTH_PROFILE_SECRET_DIR"
+  auth_profile_secret_staging=""
+  auth_profile_secret_installed=1
+fi
+
+if [[ -n "$env_staging" ]]; then
+  if [[ $env_had_original -eq 1 ]]; then
+    env_previous_copy="$tmpdir/env.pre-restore"
+    cp -p "$env_destination" "$env_previous_copy"
+    if [[ $APPLY_ENV -eq 1 ]]; then
+      cp -p "$env_destination" "$env_previous_backup"
+      chmod 600 "$env_previous_backup"
+    fi
+  fi
+  mv "$env_staging" "$env_destination"
+  env_staging=""
+  env_installed=1
+fi
+
+restore_committed=1
+gateway_restore_on_failure=0
+if [[ -n "$env_destination" ]]; then
+  if [[ $APPLY_ENV -eq 1 ]]; then
+    echo "==> Applied backed up env file to $ENV_FILE"
+  else
     echo "==> Wrote env candidate to ${ENV_FILE}.from-backup"
   fi
 fi

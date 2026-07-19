@@ -63,6 +63,18 @@ esac
 `,
   );
   await chmod(dockerStub, 0o755);
+  const mvStub = path.join(binDir, "mv");
+  await writeFile(
+    mvStub,
+    `#!/usr/bin/env bash
+set -eu
+if [ "$#" -eq 2 ] && [ -n "\${MV_FAIL_DEST:-}" ] && [[ "$1" == *restore-staging-* ]] && [ "$2" = "$MV_FAIL_DEST" ]; then
+  exit 1
+fi
+exec /bin/mv "$@"
+`,
+  );
+  await chmod(mvStub, 0o755);
   return { binDir, composePath, dockerLog, dockerStateFile };
 }
 
@@ -191,6 +203,68 @@ esac
     );
     expect(leadingDashName.status).not.toBe(0);
     expect(leadingDashName.stderr).toContain("--name must be a simple filename prefix");
+
+    const rollbackConfigDir = path.join(root, "rollback-config");
+    const rollbackWorkspaceDir = path.join(root, "rollback-workspace");
+    const rollbackAuthProfileSecretDir = path.join(root, "rollback-auth-profile-secrets");
+    await writeFixtureFile(path.join(rollbackConfigDir, "original.json"), "original\n");
+    await writeFixtureFile(path.join(rollbackWorkspaceDir, "original.txt"), "original\n");
+    await writeFixtureFile(path.join(rollbackAuthProfileSecretDir, "original.key"), "original\n");
+    writeFileSync(dockerLog, "");
+    const failedRestore = runScript(
+      RESTORE_SCRIPT,
+      [
+        "--repo-root",
+        repoRoot,
+        "--archive",
+        archivePath,
+        "--env-file",
+        path.join(root, "rollback.env"),
+        "--config-dir",
+        rollbackConfigDir,
+        "--workspace-dir",
+        rollbackWorkspaceDir,
+        "--auth-profile-secret-dir",
+        rollbackAuthProfileSecretDir,
+      ],
+      {
+        DOCKER_LOG: dockerLog,
+        DOCKER_STATE_FILE: dockerStateFile,
+        MV_FAIL_DEST: rollbackWorkspaceDir,
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        UNAME_MACHINE: "x86_64",
+        UNAME_SYSTEM: "Linux",
+      },
+    );
+    expect(failedRestore.status).not.toBe(0);
+    expect(failedRestore.stderr).toContain("rolling back active directories");
+    expect(failedRestore.stderr).toContain("Restoring gateway state after failed restore");
+    expect(readFileSync(dockerStateFile, "utf8")).toBe("running\n");
+    const failedRestoreDockerCalls = readFileSync(dockerLog, "utf8");
+    expect(failedRestoreDockerCalls).toContain("ps --all -q openclaw-gateway");
+    expect(failedRestoreDockerCalls.indexOf("stop openclaw-gateway")).toBeGreaterThanOrEqual(0);
+    expect(failedRestoreDockerCalls.indexOf("start openclaw-gateway")).toBeGreaterThan(
+      failedRestoreDockerCalls.indexOf("stop openclaw-gateway"),
+    );
+    expect(readFileSync(path.join(rollbackConfigDir, "original.json"), "utf8")).toBe("original\n");
+    expect(readFileSync(path.join(rollbackWorkspaceDir, "original.txt"), "utf8")).toBe(
+      "original\n",
+    );
+    expect(readFileSync(path.join(rollbackAuthProfileSecretDir, "original.key"), "utf8")).toBe(
+      "original\n",
+    );
+    expect(existsSync(path.join(rollbackConfigDir, "openclaw.json"))).toBe(false);
+    expect(existsSync(path.join(rollbackWorkspaceDir, "scripts", "digest.js"))).toBe(false);
+    expect(
+      readdirSync(root).some(
+        (name) => name.startsWith("rollback-") && name.includes(".restore-staging-"),
+      ),
+    ).toBe(false);
+    expect(
+      readdirSync(root).some(
+        (name) => name.startsWith("rollback-") && name.includes(".pre-restore-"),
+      ),
+    ).toBe(false);
 
     await writeFixtureFile(path.join(restoredConfigDir, "stale.json"), "{}\n");
     await writeFixtureFile(path.join(restoredWorkspaceDir, "stale.txt"), "old\n");
