@@ -298,6 +298,17 @@ esac
     await writeFixtureFile(path.join(noDockerConfigDir, "original.json"), "original\n");
     await writeFixtureFile(path.join(noDockerWorkspaceDir, "original.txt"), "original\n");
     await writeFixtureFile(path.join(noDockerAuthProfileSecretDir, "original.key"), "original\n");
+    const noDockerBashEnv = path.join(root, "no-docker.bash-env");
+    await writeFile(
+      noDockerBashEnv,
+      `command() {
+  if [[ "\${1:-}" == "-v" && "\${2:-}" == "docker" ]]; then
+    return 1
+  fi
+  builtin command "$@"
+}
+`,
+    );
     const noDockerRestore = runScript(
       RESTORE_SCRIPT,
       [
@@ -314,7 +325,11 @@ esac
         "--auth-profile-secret-dir",
         noDockerAuthProfileSecretDir,
       ],
-      { PATH: "/usr/bin:/bin" },
+      {
+        // GitHub's Linux runners install Docker in /usr/bin, so mask only the
+        // command lookup under test while leaving restore prerequisites usable.
+        BASH_ENV: noDockerBashEnv,
+      },
     );
     expect(noDockerRestore.status).not.toBe(0);
     expect(noDockerRestore.stderr).toContain("Missing required command: docker");
