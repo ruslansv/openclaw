@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 const repoRoot = resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const dockerfilePath = join(repoRoot, "Dockerfile");
 const gatewayEntrypointPath = join(repoRoot, "scripts/docker/gateway-entrypoint.sh");
+const nodeLoginPath = join(repoRoot, "scripts/docker/node-login-path.sh");
 const dockerInstallDocsPath = join(repoRoot, "docs/install/docker.md");
 const dockerignorePath = join(repoRoot, ".dockerignore");
 const dockerReleaseWorkflowPath = join(repoRoot, ".github/workflows/docker-release.yml");
@@ -31,6 +32,21 @@ describe("Dockerfile", () => {
     expect(safePathIndex).toBeGreaterThan(-1);
     expect(safePathIndex).toBeLessThan(entrypoint.indexOf("id -u"));
     expect(entrypoint).toContain('exec env PATH="$RUNTIME_PATH" "$gosu_path" node "$@"');
+  });
+
+  it("restores runtime tools for node login shells without changing root PATH", async () => {
+    const [dockerfile, loginPath] = await Promise.all([
+      readFile(dockerfilePath, "utf8"),
+      readFile(nodeLoginPath, "utf8"),
+    ]);
+
+    expect(dockerfile).toContain(
+      "COPY --from=build --chown=root:root /app/scripts/docker/node-login-path.sh /etc/profile.d/openclaw-node-path.sh",
+    );
+    expect(dockerfile).toContain("chmod 0644 /etc/profile.d/openclaw-node-path.sh");
+    expect(loginPath).toContain('if [ "$(id -un)" = "node" ]; then');
+    expect(loginPath).toContain("/usr/local/go/bin");
+    expect(loginPath).toContain("/home/linuxbrew/.linuxbrew");
   });
 
   it("keeps local backup archives out of Docker build contexts", async () => {

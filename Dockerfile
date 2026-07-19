@@ -446,6 +446,7 @@ RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,shar
     fi
 
 COPY --from=build --chown=node:node /app/scripts/docker ./scripts/docker
+COPY --from=build --chown=root:root /app/scripts/docker/node-login-path.sh /etc/profile.d/openclaw-node-path.sh
 # Normalize extension paths so plugin safety checks do not reject
 # world-writable directories inherited from source file modes.
 RUN for dir in /app/extensions /app/.agent /app/.agents; do \
@@ -455,7 +456,8 @@ RUN for dir in /app/extensions /app/.agent /app/.agents; do \
         find "$dir" -type f ! -perm /111 -exec chmod 644 {} +; \
       fi; \
     done
-RUN chmod +x scripts/docker/gateway-entrypoint.sh scripts/docker/playwright-chromium.sh
+RUN chmod +x scripts/docker/gateway-entrypoint.sh scripts/docker/playwright-chromium.sh && \
+    chmod 0644 /etc/profile.d/openclaw-node-path.sh
 # Expose the CLI binary without requiring npm global writes as non-root.
 RUN ln -sf /app/openclaw.mjs /usr/local/bin/openclaw \
  && ln -sf /app/scripts/docker/playwright-chromium.sh /usr/local/bin/openclaw-playwright-chromium \
