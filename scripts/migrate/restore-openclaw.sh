@@ -99,6 +99,7 @@ ENV_FILE="$(resolve_abs_path "$ENV_FILE")"
 [[ -d "$REPO_ROOT" ]] || fail "Repo root does not exist: $REPO_ROOT"
 [[ -f "${ARCHIVE_PATH}.sha256" ]] || fail "Archive checksum file not found: ${ARCHIVE_PATH}.sha256"
 
+umask 077
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 
@@ -215,8 +216,10 @@ write_restored_env() {
     "$CONFIG_DIR" \
     "$WORKSPACE_DIR" \
     "$AUTH_PROFILE_SECRET_DIR" <<'PY'
+import os
 import re
 import sys
+import tempfile
 
 source_path, destination_path, config_dir, workspace_dir, auth_dir = sys.argv[1:]
 replacements = {
@@ -246,8 +249,26 @@ for key, value in replacements.items():
     if key not in seen:
         output.append(f"{key}={dotenv_literal(value)}")
 
-with open(destination_path, "w", encoding="utf-8") as destination:
-    destination.write("\n".join(output) + "\n")
+destination_dir = os.path.dirname(destination_path) or "."
+fd, temporary_path = tempfile.mkstemp(
+    dir=destination_dir,
+    prefix=f".{os.path.basename(destination_path)}.",
+)
+try:
+    os.fchmod(fd, 0o600)
+    destination = os.fdopen(fd, "w", encoding="utf-8")
+    fd = None
+    with destination:
+        destination.write("\n".join(output) + "\n")
+    os.replace(temporary_path, destination_path)
+except BaseException:
+    if fd is not None:
+        os.close(fd)
+    try:
+        os.unlink(temporary_path)
+    except FileNotFoundError:
+        pass
+    raise
 PY
 }
 
@@ -256,6 +277,7 @@ if [[ -f "$tmpdir/payload/repo/.env" ]]; then
     mkdir -p "$(dirname "$ENV_FILE")"
     if [[ -f "$ENV_FILE" ]]; then
       cp "$ENV_FILE" "${ENV_FILE}.pre-restore-${timestamp}"
+      chmod 600 "${ENV_FILE}.pre-restore-${timestamp}"
     fi
     write_restored_env "$tmpdir/payload/repo/.env" "$ENV_FILE"
     chmod 600 "$ENV_FILE"

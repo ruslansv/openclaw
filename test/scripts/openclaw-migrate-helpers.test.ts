@@ -242,6 +242,11 @@ esac
     ).toBe('{"name":"local-plugin"}\n');
     expect(restore.stdout).toContain("plugins update --all");
     expect(statSync(path.join(repoRoot, ".env")).mode & 0o077).toBe(0);
+    const previousEnvName = readdirSync(repoRoot).find((name) =>
+      name.startsWith(".env.pre-restore-"),
+    );
+    expect(previousEnvName).toBeDefined();
+    expect(statSync(path.join(repoRoot, previousEnvName ?? "missing")).mode & 0o077).toBe(0);
 
     const roundTripBackup = runScript(BACKUP_SCRIPT, [
       "--repo-root",
