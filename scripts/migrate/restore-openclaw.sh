@@ -303,28 +303,7 @@ AUTH_PROFILE_SECRET_DIR="${AUTH_PROFILE_SECRET_DIR:-$HOME/.openclaw-auth-profile
 CONFIG_DIR="$(resolve_abs_path "$CONFIG_DIR")"
 WORKSPACE_DIR="$(resolve_abs_path "$WORKSPACE_DIR")"
 AUTH_PROFILE_SECRET_DIR="$(resolve_abs_path "$AUTH_PROFILE_SECRET_DIR")"
-
-for restore_dir in "$CONFIG_DIR" "$WORKSPACE_DIR" "$AUTH_PROFILE_SECRET_DIR"; do
-  [[ "$restore_dir" != "/" ]] || fail "Restore directories must not be the filesystem root"
-done
-if [[ "$CONFIG_DIR" == "$WORKSPACE_DIR" || "$CONFIG_DIR" == "$WORKSPACE_DIR"/* ]]; then
-  fail "Config and workspace directories have an unsupported overlap: $CONFIG_DIR and $WORKSPACE_DIR"
-fi
-if [[
-  "$AUTH_PROFILE_SECRET_DIR" == "$CONFIG_DIR" ||
-  "$AUTH_PROFILE_SECRET_DIR" == "$CONFIG_DIR"/* ||
-  "$CONFIG_DIR" == "$AUTH_PROFILE_SECRET_DIR"/* ||
-  "$AUTH_PROFILE_SECRET_DIR" == "$WORKSPACE_DIR" ||
-  "$AUTH_PROFILE_SECRET_DIR" == "$WORKSPACE_DIR"/* ||
-  "$WORKSPACE_DIR" == "$AUTH_PROFILE_SECRET_DIR"/*
-]]; then
-  fail "Auth-profile secret directory must not overlap config or workspace directories"
-fi
-for restore_dir in "$CONFIG_DIR" "$WORKSPACE_DIR" "$AUTH_PROFILE_SECRET_DIR"; do
-  if [[ "$ENV_FILE" == "$restore_dir" || "$ENV_FILE" == "$restore_dir"/* ]]; then
-    fail "Env file must be outside restored directories: $ENV_FILE"
-  fi
-done
+validate_migration_layout "$CONFIG_DIR" "$WORKSPACE_DIR" "$AUTH_PROFILE_SECRET_DIR" "$ENV_FILE"
 
 source_arch="$(grep -E '^source_arch=' "$extract_dir/meta/backup.env" | cut -d= -f2- || true)"
 target_arch="$(uname -m)"

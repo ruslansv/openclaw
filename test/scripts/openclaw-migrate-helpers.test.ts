@@ -1,7 +1,7 @@
 // Docker migration helper tests cover host-state backup and restore invariants.
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { chmod, mkdir, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -231,6 +231,53 @@ esac
     );
     expect(leadingDashName.status).not.toBe(0);
     expect(leadingDashName.stderr).toContain("--name must be a simple filename prefix");
+
+    const escapingSymlink = path.join(configDir, "escaping-link");
+    await symlink(path.join(root, "outside-config"), escapingSymlink);
+    const symlinkBackup = runScript(
+      BACKUP_SCRIPT,
+      [
+        "--repo-root",
+        repoRoot,
+        "--output-dir",
+        backupDir,
+        "--name",
+        "symlink-rejected",
+        "--no-stop",
+      ],
+      { PATH: `${binDir}:${process.env.PATH ?? ""}` },
+    );
+    expect(symlinkBackup.status).not.toBe(0);
+    expect(symlinkBackup.stderr).toContain("symlink outside its migrated directory");
+    expect(existsSync(path.join(backupDir, "symlink-rejected.tar.gz"))).toBe(false);
+    await unlink(escapingSymlink);
+
+    const overlapWorkspaceDir = path.join(root, "overlap-workspace");
+    const overlapConfigDir = path.join(overlapWorkspaceDir, "config");
+    await writeFixtureFile(path.join(overlapWorkspaceDir, "workspace.txt"), "workspace\n");
+    await writeFixtureFile(path.join(overlapConfigDir, "openclaw.json"), "{}\n");
+    const overlapBackup = runScript(
+      BACKUP_SCRIPT,
+      [
+        "--repo-root",
+        repoRoot,
+        "--config-dir",
+        overlapConfigDir,
+        "--workspace-dir",
+        overlapWorkspaceDir,
+        "--auth-profile-secret-dir",
+        authProfileSecretDir,
+        "--output-dir",
+        backupDir,
+        "--name",
+        "overlap-rejected",
+        "--no-stop",
+      ],
+      { PATH: `${binDir}:${process.env.PATH ?? ""}` },
+    );
+    expect(overlapBackup.status).not.toBe(0);
+    expect(overlapBackup.stderr).toContain("unsupported overlap");
+    expect(existsSync(path.join(backupDir, "overlap-rejected.tar.gz"))).toBe(false);
 
     const rollbackConfigDir = path.join(root, "rollback-config");
     const rollbackWorkspaceDir = path.join(root, "rollback-workspace");

@@ -44,3 +44,33 @@ path = sys.argv[1]
 print(os.path.abspath(os.path.expanduser(path)))
 PY
 }
+
+validate_migration_layout() {
+  local config_dir="$1"
+  local workspace_dir="$2"
+  local auth_profile_secret_dir="$3"
+  local env_file="$4"
+  local restore_dir
+
+  for restore_dir in "$config_dir" "$workspace_dir" "$auth_profile_secret_dir"; do
+    [[ "$restore_dir" != "/" ]] || fail "Migration directories must not be the filesystem root"
+  done
+  if [[ "$config_dir" == "$workspace_dir" || "$config_dir" == "$workspace_dir"/* ]]; then
+    fail "Config and workspace directories have an unsupported overlap: $config_dir and $workspace_dir"
+  fi
+  if [[
+    "$auth_profile_secret_dir" == "$config_dir" ||
+    "$auth_profile_secret_dir" == "$config_dir"/* ||
+    "$config_dir" == "$auth_profile_secret_dir"/* ||
+    "$auth_profile_secret_dir" == "$workspace_dir" ||
+    "$auth_profile_secret_dir" == "$workspace_dir"/* ||
+    "$workspace_dir" == "$auth_profile_secret_dir"/*
+  ]]; then
+    fail "Auth-profile secret directory must not overlap config or workspace directories"
+  fi
+  for restore_dir in "$config_dir" "$workspace_dir" "$auth_profile_secret_dir"; do
+    if [[ "$env_file" == "$restore_dir" || "$env_file" == "$restore_dir"/* ]]; then
+      fail "Env file must be outside migrated directories: $env_file"
+    fi
+  done
+}
