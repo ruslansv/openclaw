@@ -654,12 +654,12 @@ describe("Dockerfile", () => {
 
   it("pins Go and Homebrew sources for reproducible Docker builds", async () => {
     const dockerfile = await readFile(dockerfilePath, "utf8");
-    expect(dockerfile).toContain("ARG GO_VERSION=1.26.1");
+    expect(dockerfile).toContain("ARG GO_VERSION=1.26.5");
     expect(dockerfile).toContain(
-      "ARG GO_LINUX_AMD64_SHA256=031f088e5d955bab8657ede27ad4e3bc5b7c1ba281f05f245bcc304f327c987a",
+      "ARG GO_LINUX_AMD64_SHA256=5c2c3b16caefa1d968a94c1daca04a7ca301a496d9b086e17ad77bb81393f053",
     );
     expect(dockerfile).toContain(
-      "ARG GO_LINUX_ARM64_SHA256=a290581cfe4fe28ddd737dde3095f3dbeb7f2e4065cab4eae44dfc53b760c2f7",
+      "ARG GO_LINUX_ARM64_SHA256=fe4789e92b1f33358680864bbe8704289e7bb5fc207d80623c308935bd696d49",
     );
     expect(dockerfile).toContain('GOVERSION="go${GO_VERSION#go}"');
     expect(dockerfile).toContain("sha256sum -c -");
