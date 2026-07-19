@@ -102,19 +102,190 @@ ENV_FILE="$(resolve_abs_path "$ENV_FILE")"
 umask 077
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
+extract_dir="$tmpdir/archive"
+scratch_dir="$tmpdir/runtime"
+mkdir -p "$extract_dir" "$scratch_dir"
 
 archive_checksum="$(awk 'NR == 1 { print $1 }' "${ARCHIVE_PATH}.sha256")"
 [[ -n "$archive_checksum" ]] || fail "Archive checksum file is invalid: ${ARCHIVE_PATH}.sha256"
 printf '%s  %s\n' "$archive_checksum" "$ARCHIVE_PATH" | shasum -a 256 -c -
 
-echo "==> Extracting archive"
-tar -xzf "$ARCHIVE_PATH" -C "$tmpdir"
+python3 - "$ARCHIVE_PATH" <<'PY'
+import hashlib
+import posixpath
+import re
+import sys
+import tarfile
 
-[[ -f "$tmpdir/SHA256SUMS" ]] || fail "Archive missing SHA256SUMS"
-(
-  cd "$tmpdir"
-  shasum -a 256 -c SHA256SUMS
-)
+archive_path = sys.argv[1]
+allowed_payload_roots = {"auth-profile-secrets", "config", "repo", "workspace"}
+allowed_repo_paths = {
+    ".env",
+    "Dockerfile",
+    "docker-compose.extra.yml",
+    "docker-compose.override.yml",
+    "docker-compose.yml",
+    "scripts",
+    "scripts/docker",
+    "scripts/docker/setup.sh",
+}
+allowed_meta_paths = {"backup.env", "docker.txt", "git.txt"}
+
+
+def fail(message):
+    raise SystemExit(f"Archive validation failed: {message}")
+
+
+def canonical_member_path(raw_path):
+    if "\0" in raw_path or raw_path.startswith("/"):
+        fail(f"unsafe member path: {raw_path!r}")
+    path = raw_path
+    while path.startswith("./"):
+        path = path[2:]
+    path = path.rstrip("/")
+    if path in {"", "."}:
+        return "."
+    normalized = posixpath.normpath(path)
+    if normalized != path or normalized == ".." or normalized.startswith("../"):
+        fail(f"unsafe member path: {raw_path!r}")
+    return path
+
+
+def validate_layout(path):
+    if path == ".":
+        return
+    parts = path.split("/")
+    if parts[0] == "SHA256SUMS":
+        if len(parts) != 1:
+            fail(f"unexpected archive path: {path!r}")
+        return
+    if parts[0] == "meta":
+        if len(parts) > 2 or (len(parts) == 2 and parts[1] not in allowed_meta_paths):
+            fail(f"unexpected archive path: {path!r}")
+        return
+    if parts[0] != "payload" or (len(parts) > 1 and parts[1] not in allowed_payload_roots):
+        fail(f"unexpected archive path: {path!r}")
+    if len(parts) >= 3 and parts[1] == "repo":
+        repo_path = "/".join(parts[2:])
+        if repo_path not in allowed_repo_paths:
+            fail(f"unexpected archive path: {path!r}")
+
+
+def owning_payload_root(path):
+    parts = path.split("/")
+    if len(parts) >= 2 and parts[0] == "payload" and parts[1] in allowed_payload_roots:
+        return "/".join(parts[:2])
+    return None
+
+
+def validate_link(member_path, link_path, hardlink=False):
+    if not link_path or link_path.startswith("/"):
+        fail(f"unsafe link target for {member_path!r}: {link_path!r}")
+    if hardlink:
+        target = canonical_member_path(link_path)
+    else:
+        target = posixpath.normpath(posixpath.join(posixpath.dirname(member_path), link_path))
+        if target == ".." or target.startswith("../"):
+            fail(f"unsafe link target for {member_path!r}: {link_path!r}")
+        validate_layout(target)
+    owner = owning_payload_root(member_path)
+    if owner is None or (target != owner and not target.startswith(f"{owner}/")):
+        fail(f"link escapes its payload root for {member_path!r}: {link_path!r}")
+    return target
+
+
+def decode_manifest_path(value):
+    output = []
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if char != "\\":
+            output.append(char)
+            index += 1
+            continue
+        index += 1
+        if index >= len(value) or value[index] not in {"\\", "n"}:
+            fail("invalid escaped path in SHA256SUMS")
+        output.append("\n" if value[index] == "n" else "\\")
+        index += 1
+    return "".join(output)
+
+
+with tarfile.open(archive_path, "r:gz") as archive:
+    members = {}
+    for member in archive.getmembers():
+        path = canonical_member_path(member.name)
+        validate_layout(path)
+        if path in members:
+            fail(f"duplicate archive path: {path!r}")
+        if not (
+            member.isdir()
+            or member.isreg()
+            or member.issym()
+            or member.islnk()
+            or member.isfifo()
+        ):
+            fail(f"unsupported archive entry type: {path!r}")
+        if (member.issym() or member.islnk()) and path != ".":
+            validate_link(path, member.linkname, hardlink=member.islnk())
+        if member.isfifo() and owning_payload_root(path) not in {
+            "payload/auth-profile-secrets",
+            "payload/config",
+            "payload/workspace",
+        }:
+            fail(f"unsupported FIFO location: {path!r}")
+        members[path] = member
+
+    required_types = {
+        "SHA256SUMS": "file",
+        "meta/backup.env": "file",
+        "payload/config": "directory",
+        "payload/workspace": "directory",
+    }
+    for path, expected_type in required_types.items():
+        member = members.get(path)
+        valid = member is not None and (member.isreg() if expected_type == "file" else member.isdir())
+        if not valid:
+            fail(f"missing required {expected_type}: {path}")
+
+    manifest_file = archive.extractfile(members["SHA256SUMS"])
+    if manifest_file is None:
+        fail("could not read SHA256SUMS")
+    manifest_entries = {}
+    for raw_line in manifest_file.read().decode("utf-8").splitlines():
+        escaped = raw_line.startswith("\\")
+        line = raw_line[1:] if escaped else raw_line
+        match = re.fullmatch(r"([0-9a-f]{64})  (.+)", line)
+        if match is None:
+            fail("invalid SHA256SUMS line")
+        manifest_path = decode_manifest_path(match.group(2)) if escaped else match.group(2)
+        if not manifest_path.startswith("./"):
+            fail(f"unsafe SHA256SUMS path: {manifest_path!r}")
+        path = canonical_member_path(manifest_path)
+        if path in manifest_entries:
+            fail(f"duplicate SHA256SUMS path: {path!r}")
+        manifest_entries[path] = match.group(1)
+
+    content_members = {
+        path: member
+        for path, member in members.items()
+        if path != "SHA256SUMS" and (member.isreg() or member.islnk())
+    }
+    if set(manifest_entries) != set(content_members):
+        fail("SHA256SUMS does not exactly cover archive file content")
+    for path, member in content_members.items():
+        source = archive.extractfile(member)
+        if source is None:
+            fail(f"could not read archive content: {path!r}")
+        digest = hashlib.sha256()
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+        if digest.hexdigest() != manifest_entries[path]:
+            fail(f"checksum mismatch: {path!r}")
+PY
+
+echo "==> Extracting archive"
+tar -xzf "$ARCHIVE_PATH" -C "$extract_dir"
 
 if [[ -z "$CONFIG_DIR" ]]; then
   CONFIG_DIR="${OPENCLAW_CONFIG_DIR:-$(env_value_from_file "$ENV_FILE" OPENCLAW_CONFIG_DIR)}"
@@ -155,7 +326,7 @@ for restore_dir in "$CONFIG_DIR" "$WORKSPACE_DIR" "$AUTH_PROFILE_SECRET_DIR"; do
   fi
 done
 
-source_arch="$(grep -E '^source_arch=' "$tmpdir/meta/backup.env" | cut -d= -f2- || true)"
+source_arch="$(grep -E '^source_arch=' "$extract_dir/meta/backup.env" | cut -d= -f2- || true)"
 target_arch="$(uname -m)"
 if [[ "$(uname -s)" == "Darwin" ]] && command -v sysctl >/dev/null 2>&1; then
   # Rosetta reports the process architecture, but restored native plugin state
@@ -283,7 +454,7 @@ trap 'exit 143' TERM
 if [[ $workspace_is_nested -eq 0 ]]; then
   [[ ! -e "$workspace_backup" ]] || fail "Pre-restore snapshot already exists: $workspace_backup"
 fi
-if [[ -d "$tmpdir/payload/auth-profile-secrets" ]]; then
+if [[ -d "$extract_dir/payload/auth-profile-secrets" ]]; then
   [[ ! -e "$auth_profile_secret_backup" ]] || fail "Pre-restore snapshot already exists: $auth_profile_secret_backup"
 fi
 
@@ -296,7 +467,7 @@ if [[ $workspace_is_nested -eq 1 ]]; then
 else
   workspace_staging="$(mktemp -d "${WORKSPACE_DIR}.restore-staging-${timestamp}.XXXXXX")"
 fi
-if [[ -d "$tmpdir/payload/auth-profile-secrets" ]]; then
+if [[ -d "$extract_dir/payload/auth-profile-secrets" ]]; then
   auth_profile_secret_staging="$(mktemp -d "${AUTH_PROFILE_SECRET_DIR}.restore-staging-${timestamp}.XXXXXX")"
 fi
 
@@ -322,26 +493,26 @@ if [[ $arch_mismatch -eq 1 ]]; then
   mkdir -p "$plugin_payload_backup/config" "$plugin_payload_backup/workspace/.openclaw"
   plugin_payload_created=1
   for relative_dir in extensions git npm; do
-    if [[ -d "$tmpdir/payload/config/$relative_dir" ]]; then
+    if [[ -d "$extract_dir/payload/config/$relative_dir" ]]; then
       rsync -a \
-        "$tmpdir/payload/config/$relative_dir/" \
+        "$extract_dir/payload/config/$relative_dir/" \
         "$plugin_payload_backup/config/$relative_dir/"
     fi
   done
-  if [[ -d "$tmpdir/payload/workspace/.openclaw/extensions" ]]; then
+  if [[ -d "$extract_dir/payload/workspace/.openclaw/extensions" ]]; then
     rsync -a \
-      "$tmpdir/payload/workspace/.openclaw/extensions/" \
+      "$extract_dir/payload/workspace/.openclaw/extensions/" \
       "$plugin_payload_backup/workspace/.openclaw/extensions/"
   fi
 fi
-rsync "${config_rsync_args[@]}" "$tmpdir/payload/config/" "$config_staging/"
+rsync "${config_rsync_args[@]}" "$extract_dir/payload/config/" "$config_staging/"
 
 echo "==> Restoring workspace"
-rsync "${workspace_rsync_args[@]}" "$tmpdir/payload/workspace/" "$workspace_staging/"
+rsync "${workspace_rsync_args[@]}" "$extract_dir/payload/workspace/" "$workspace_staging/"
 
-if [[ -d "$tmpdir/payload/auth-profile-secrets" ]]; then
+if [[ -d "$extract_dir/payload/auth-profile-secrets" ]]; then
   echo "==> Restoring auth-profile secret directory"
-  rsync -a "$tmpdir/payload/auth-profile-secrets/" "$auth_profile_secret_staging/"
+  rsync -a "$extract_dir/payload/auth-profile-secrets/" "$auth_profile_secret_staging/"
 fi
 
 write_restored_env() {
@@ -409,7 +580,7 @@ except BaseException:
 PY
 }
 
-if [[ -f "$tmpdir/payload/repo/.env" ]]; then
+if [[ -f "$extract_dir/payload/repo/.env" ]]; then
   if [[ $APPLY_ENV -eq 1 ]]; then
     mkdir -p "$(dirname "$ENV_FILE")"
     env_destination="$ENV_FILE"
@@ -426,7 +597,7 @@ if [[ -f "$tmpdir/payload/repo/.env" ]]; then
     fi
   fi
   env_staging="$(mktemp "$(dirname "$env_destination")/.${env_destination##*/}.restore-${timestamp}.XXXXXX")"
-  write_restored_env "$tmpdir/payload/repo/.env" "$env_staging"
+  write_restored_env "$extract_dir/payload/repo/.env" "$env_staging"
   chmod 600 "$env_staging"
 fi
 
@@ -496,7 +667,7 @@ fi
 
 if [[ -n "$env_staging" ]]; then
   if [[ $env_had_original -eq 1 ]]; then
-    env_previous_copy="$tmpdir/env.pre-restore"
+    env_previous_copy="$scratch_dir/env.pre-restore"
     cp -p "$env_destination" "$env_previous_copy"
     if [[ $APPLY_ENV -eq 1 ]]; then
       cp -p "$env_destination" "$env_previous_backup"
@@ -529,7 +700,7 @@ fi
 echo
 echo "Restore completed."
 echo "Next steps:"
-if [[ -f "$tmpdir/payload/repo/.env" && $APPLY_ENV -eq 0 ]]; then
+if [[ -f "$extract_dir/payload/repo/.env" && $APPLY_ENV -eq 0 ]]; then
   echo "  1) Review ${ENV_FILE}.from-backup and install the intended values in $ENV_FILE."
 else
   echo "  1) Review the restored Docker environment values in $ENV_FILE."

@@ -1,7 +1,7 @@
 // Docker migration helper tests cover host-state backup and restore invariants.
 import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { chmod, mkdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -184,6 +184,34 @@ esac
     expect(existsSync(`${archivePath}.sha256`)).toBe(true);
     expect(statSync(archivePath).mode & 0o077).toBe(0);
     expect(statSync(`${archivePath}.sha256`).mode & 0o077).toBe(0);
+
+    const maliciousStage = path.join(root, "malicious-archive-stage");
+    const maliciousArchive = path.join(backupDir, "malicious.tar.gz");
+    const symlinkVictim = path.join(root, "symlink-victim.txt");
+    await mkdir(maliciousStage);
+    await writeFile(symlinkVictim, "unchanged\n");
+    expect(spawnSync("tar", ["-xzf", archivePath, "-C", maliciousStage]).status).toBe(0);
+    await symlink(symlinkVictim, path.join(maliciousStage, "env.pre-restore"));
+    expect(spawnSync("tar", ["-czf", maliciousArchive, "."], { cwd: maliciousStage }).status).toBe(
+      0,
+    );
+    const maliciousDigest = spawnSync("shasum", ["-a", "256", maliciousArchive], {
+      encoding: "utf8",
+    });
+    expect(maliciousDigest.status).toBe(0);
+    await writeFile(
+      `${maliciousArchive}.sha256`,
+      `${maliciousDigest.stdout.trim().split(/\s+/u)[0]}  ./malicious.tar.gz\n`,
+    );
+    const maliciousRestore = runScript(
+      RESTORE_SCRIPT,
+      ["--repo-root", repoRoot, "--archive", maliciousArchive, "--no-stop"],
+      { PATH: `${binDir}:${process.env.PATH ?? ""}` },
+    );
+    expect(maliciousRestore.status).not.toBe(0);
+    expect(maliciousRestore.stderr).toContain("unexpected archive path: 'env.pre-restore'");
+    expect(readFileSync(symlinkVictim, "utf8")).toBe("unchanged\n");
+
     const archiveBeforeCollision = readFileSync(archivePath);
     const checksumBeforeCollision = readFileSync(`${archivePath}.sha256`);
     const collision = runScript(
