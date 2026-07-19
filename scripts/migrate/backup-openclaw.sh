@@ -122,20 +122,44 @@ AUTH_PROFILE_SECRET_DIR="$(resolve_abs_path "$AUTH_PROFILE_SECRET_DIR")"
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 BACKUP_NAME="${BACKUP_NAME:-openclaw-backup-${timestamp}}"
 case "$BACKUP_NAME" in
-  *[!/A-Za-z0-9._-]*|*/*|.*|*..*)
+  -*|*[!/A-Za-z0-9._-]*|*/*|.*|*..*)
     fail "--name must be a simple filename prefix using letters, numbers, dot, underscore, or dash"
     ;;
 esac
 umask 077
 mkdir -p "$OUTPUT_DIR"
 
+archive_path="$OUTPUT_DIR/${BACKUP_NAME}.tar.gz"
+checksum_path="${archive_path}.sha256"
+[[ ! -e "$archive_path" ]] || fail "Backup output already exists: $archive_path"
+[[ ! -e "$checksum_path" ]] || fail "Backup output already exists: $checksum_path"
+
 tmpdir="$(mktemp -d)"
 compose_file="$REPO_ROOT/docker-compose.yml"
 restart_gateway=0
+archive_tmp=""
+checksum_tmp=""
+published_archive=0
+published_checksum=0
+backup_complete=0
 
 cleanup() {
   local status=$?
   trap - EXIT INT TERM
+  if [[ $backup_complete -eq 0 ]]; then
+    if [[ $published_archive -eq 1 ]]; then
+      rm -f "$archive_path"
+    fi
+    if [[ $published_checksum -eq 1 ]]; then
+      rm -f "$checksum_path"
+    fi
+  fi
+  if [[ -n "$archive_tmp" ]]; then
+    rm -f "$archive_tmp"
+  fi
+  if [[ -n "$checksum_tmp" ]]; then
+    rm -f "$checksum_tmp"
+  fi
   rm -rf "$tmpdir"
   if [[ $restart_gateway -eq 1 ]]; then
     echo "==> Restarting gateway container"
@@ -271,21 +295,31 @@ with open(os.path.join(stage, "SHA256SUMS"), "w", encoding="utf-8") as out:
 PY
 )
 
-archive_path="$OUTPUT_DIR/${BACKUP_NAME}.tar.gz"
+archive_tmp="$(mktemp "$OUTPUT_DIR/.${BACKUP_NAME}.archive.XXXXXX")"
+checksum_tmp="$(mktemp "$OUTPUT_DIR/.${BACKUP_NAME}.checksum.XXXXXX")"
 (
   cd "$stage"
-  tar -czf "$archive_path" .
+  tar -czf "$archive_tmp" .
 )
-(
-  cd "$OUTPUT_DIR"
-  shasum -a 256 "$(basename "$archive_path")" > "$(basename "$archive_path").sha256"
-)
-chmod 600 "$archive_path" "${archive_path}.sha256"
+archive_digest="$(shasum -a 256 "$archive_tmp" | awk 'NR == 1 { print $1 }')"
+[[ -n "$archive_digest" ]] || fail "Failed to calculate backup archive checksum"
+printf '%s  ./%s\n' "$archive_digest" "$(basename "$archive_path")" >"$checksum_tmp"
+chmod 600 "$archive_tmp" "$checksum_tmp"
+
+# Publish the archive last so every visible archive already has its checksum.
+ln "$checksum_tmp" "$checksum_path" || fail "Backup output appeared during creation: $checksum_path"
+published_checksum=1
+ln "$archive_tmp" "$archive_path" || fail "Backup output appeared during creation: $archive_path"
+published_archive=1
+backup_complete=1
+rm -f "$archive_tmp" "$checksum_tmp"
+archive_tmp=""
+checksum_tmp=""
 
 echo
 echo "Backup created:"
 echo "  $archive_path"
-echo "  ${archive_path}.sha256"
+echo "  $checksum_path"
 echo
 echo "Next step on target host:"
 echo "  scripts/migrate/restore-openclaw.sh --archive \"$archive_path\""

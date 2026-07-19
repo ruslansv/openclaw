@@ -159,6 +159,25 @@ esac
     expect(existsSync(`${archivePath}.sha256`)).toBe(true);
     expect(statSync(archivePath).mode & 0o077).toBe(0);
     expect(statSync(`${archivePath}.sha256`).mode & 0o077).toBe(0);
+    const archiveBeforeCollision = readFileSync(archivePath);
+    const checksumBeforeCollision = readFileSync(`${archivePath}.sha256`);
+    const collision = runScript(
+      BACKUP_SCRIPT,
+      ["--repo-root", repoRoot, "--output-dir", backupDir, "--name", "sample", "--no-stop"],
+      { PATH: `${binDir}:${process.env.PATH ?? ""}` },
+    );
+    expect(collision.status).not.toBe(0);
+    expect(collision.stderr).toContain("Backup output already exists");
+    expect(readFileSync(archivePath)).toEqual(archiveBeforeCollision);
+    expect(readFileSync(`${archivePath}.sha256`)).toEqual(checksumBeforeCollision);
+
+    const leadingDashName = runScript(
+      BACKUP_SCRIPT,
+      ["--repo-root", repoRoot, "--output-dir", backupDir, "--name", "-snapshot", "--no-stop"],
+      { PATH: `${binDir}:${process.env.PATH ?? ""}` },
+    );
+    expect(leadingDashName.status).not.toBe(0);
+    expect(leadingDashName.stderr).toContain("--name must be a simple filename prefix");
 
     await writeFixtureFile(path.join(restoredConfigDir, "stale.json"), "{}\n");
     await writeFixtureFile(path.join(restoredWorkspaceDir, "stale.txt"), "old\n");
@@ -241,6 +260,9 @@ esac
       ),
     ).toBe('{"name":"local-plugin"}\n');
     expect(restore.stdout).toContain("plugins update --all");
+    expect(restore.stdout).toContain("./scripts/docker/setup.sh");
+    expect(restore.stdout).toContain("regenerates required extra/sandbox Compose overlays");
+    expect(restore.stdout).not.toContain(`docker compose -f "${repoRoot}/docker-compose.yml" up`);
     expect(statSync(path.join(repoRoot, ".env")).mode & 0o077).toBe(0);
     const previousEnvName = readdirSync(repoRoot).find((name) =>
       name.startsWith(".env.pre-restore-"),

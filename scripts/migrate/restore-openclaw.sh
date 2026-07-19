@@ -301,15 +301,23 @@ fi
 echo
 echo "Restore completed."
 echo "Next steps:"
-echo "  1) docker compose -f \"$REPO_ROOT/docker-compose.yml\" up -d --build --force-recreate openclaw-gateway"
-if [[ $arch_mismatch -eq 1 ]]; then
-  echo "  2) docker compose -f \"$REPO_ROOT/docker-compose.yml\" run --rm openclaw-cli plugins update --all"
-  echo "  3) docker compose -f \"$REPO_ROOT/docker-compose.yml\" run --rm openclaw-cli doctor --fix"
-  echo "  4) Reinstall/rebuild any local or path plugins preserved under: $plugin_payload_backup"
-  echo "  5) docker compose -f \"$REPO_ROOT/docker-compose.yml\" restart openclaw-gateway"
-  echo "  6) docker compose -f \"$REPO_ROOT/docker-compose.yml\" run --rm openclaw-cli health"
-  echo "  7) docker compose -f \"$REPO_ROOT/docker-compose.yml\" run --rm openclaw-cli channels status --probe"
+if [[ -f "$tmpdir/payload/repo/.env" && $APPLY_ENV -eq 0 ]]; then
+  echo "  1) Review ${ENV_FILE}.from-backup and install the intended values in $ENV_FILE."
 else
-  echo "  2) docker compose -f \"$REPO_ROOT/docker-compose.yml\" run --rm openclaw-cli health"
-  echo "  3) docker compose -f \"$REPO_ROOT/docker-compose.yml\" run --rm openclaw-cli channels status --probe"
+  echo "  1) Review the restored Docker environment values in $ENV_FILE."
+fi
+echo "  2) Export the restored OPENCLAW_* values required by Docker setup."
+echo "  3) cd \"$REPO_ROOT\" && ./scripts/docker/setup.sh"
+echo "     Setup regenerates required extra/sandbox Compose overlays before startup."
+echo "  4) Use the full 'docker compose -f ...' command printed by setup for all commands below."
+if [[ $arch_mismatch -eq 1 ]]; then
+  echo "  5) <full-compose-command> run --rm openclaw-cli plugins update --all"
+  echo "  6) <full-compose-command> run --rm openclaw-cli doctor --fix"
+  echo "  7) Reinstall/rebuild any local or path plugins preserved under: $plugin_payload_backup"
+  echo "  8) <full-compose-command> restart openclaw-gateway"
+  echo "  9) <full-compose-command> run --rm openclaw-cli health"
+  echo " 10) <full-compose-command> run --rm openclaw-cli channels status --probe"
+else
+  echo "  5) <full-compose-command> run --rm openclaw-cli health"
+  echo "  6) <full-compose-command> run --rm openclaw-cli channels status --probe"
 fi
