@@ -134,6 +134,13 @@ AUTH_PROFILE_SECRET_DIR="$(resolve_abs_path "$AUTH_PROFILE_SECRET_DIR")"
 
 source_arch="$(grep -E '^source_arch=' "$tmpdir/meta/backup.env" | cut -d= -f2- || true)"
 target_arch="$(uname -m)"
+if [[ "$(uname -s)" == "Darwin" ]] && command -v sysctl >/dev/null 2>&1; then
+  # Rosetta reports the process architecture, but restored native plugin state
+  # must match the Apple Silicon hardware that will run Docker.
+  if [[ "$(sysctl -in hw.optional.arm64 2>/dev/null || true)" == "1" ]]; then
+    target_arch="arm64"
+  fi
+fi
 arch_mismatch=0
 if [[ -n "$source_arch" && "$source_arch" != "$target_arch" ]]; then
   arch_mismatch=1
@@ -254,6 +261,7 @@ if [[ -f "$tmpdir/payload/repo/.env" ]]; then
     chmod 600 "$ENV_FILE"
     echo "==> Applied backed up env file to $ENV_FILE"
   else
+    mkdir -p "$(dirname "$ENV_FILE")"
     write_restored_env "$tmpdir/payload/repo/.env" "${ENV_FILE}.from-backup"
     chmod 600 "${ENV_FILE}.from-backup"
     echo "==> Wrote env candidate to ${ENV_FILE}.from-backup"

@@ -110,6 +110,29 @@ describe("openclaw Docker migration helpers", () => {
         "",
       ].join("\n"),
     );
+    const unameStub = path.join(binDir, "uname");
+    await writeFile(
+      unameStub,
+      `#!/usr/bin/env sh
+case "\${1:-}" in
+  -m) printf '%s\\n' "\${UNAME_MACHINE:-x86_64}" ;;
+  -s) printf '%s\\n' "\${UNAME_SYSTEM:-Linux}" ;;
+  *) exit 1 ;;
+esac
+`,
+    );
+    await chmod(unameStub, 0o755);
+    const sysctlStub = path.join(binDir, "sysctl");
+    await writeFile(
+      sysctlStub,
+      `#!/usr/bin/env sh
+case "$*" in
+  *hw.optional.arm64*) printf '%s\\n' "\${SYSCTL_HW_OPTIONAL_ARM64:-0}" ;;
+  *) exit 1 ;;
+esac
+`,
+    );
+    await chmod(sysctlStub, 0o755);
 
     const backup = runScript(
       BACKUP_SCRIPT,
@@ -117,6 +140,8 @@ describe("openclaw Docker migration helpers", () => {
       {
         DOCKER_LOG: dockerLog,
         PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        UNAME_MACHINE: "x86_64",
+        UNAME_SYSTEM: "Linux",
       },
     );
     expect(backup.stderr).toBe("");
@@ -139,9 +164,6 @@ describe("openclaw Docker migration helpers", () => {
     await writeFixtureFile(path.join(restoredWorkspaceDir, "stale.txt"), "old\n");
     await writeFixtureFile(path.join(restoredAuthProfileSecretDir, "stale.key"), "old\n");
     writeFileSync(path.join(repoRoot, ".env"), "OPENCLAW_GATEWAY_TOKEN=old\n");
-    const unameStub = path.join(binDir, "uname");
-    await writeFile(unameStub, "#!/usr/bin/env sh\nprintf '%s\\n' test-target-arch\n");
-    await chmod(unameStub, 0o755);
 
     const restore = runScript(
       RESTORE_SCRIPT,
@@ -159,7 +181,12 @@ describe("openclaw Docker migration helpers", () => {
         "--no-stop",
         "--apply-env",
       ],
-      { PATH: `${binDir}:${process.env.PATH ?? ""}` },
+      {
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        SYSCTL_HW_OPTIONAL_ARM64: "1",
+        UNAME_MACHINE: "x86_64",
+        UNAME_SYSTEM: "Darwin",
+      },
     );
     expect(restore.stderr).toBe("");
     expect(restore.status).toBe(0);
@@ -227,6 +254,35 @@ describe("openclaw Docker migration helpers", () => {
     ]);
     expect(roundTripBackup.stderr).toBe("");
     expect(roundTripBackup.status).toBe(0);
+
+    const candidateEnvFile = path.join(root, "new", "nested", "openclaw.env");
+    const candidateRestore = runScript(
+      RESTORE_SCRIPT,
+      [
+        "--repo-root",
+        repoRoot,
+        "--archive",
+        archivePath,
+        "--env-file",
+        candidateEnvFile,
+        "--config-dir",
+        path.join(root, "candidate-config"),
+        "--workspace-dir",
+        path.join(root, "candidate-workspace"),
+        "--auth-profile-secret-dir",
+        path.join(root, "candidate-auth-secrets"),
+        "--no-stop",
+      ],
+      {
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        UNAME_MACHINE: "x86_64",
+        UNAME_SYSTEM: "Linux",
+      },
+    );
+    expect(candidateRestore.stderr).toBe("");
+    expect(candidateRestore.status).toBe(0);
+    expect(existsSync(`${candidateEnvFile}.from-backup`)).toBe(true);
+    expect(statSync(`${candidateEnvFile}.from-backup`).mode & 0o077).toBe(0);
   });
 
   it("restarts the gateway when a quiesced backup fails", async () => {
