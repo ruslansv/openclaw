@@ -44,6 +44,7 @@ import {
   type OpenClawStateDatabase,
   type OpenClawStateDatabaseOptions,
 } from "./openclaw-state-db-contract.js";
+import { ensureOperatorApprovalResolutionRefs } from "./openclaw-state-db-legacy-backfills.js";
 import {
   assertSupportedSchemaVersion,
   createOpenClawDatabaseVerificationError,
@@ -161,6 +162,9 @@ export function repairOpenClawStateDatabaseSchema(options: OpenClawStateDatabase
             `Migrated shared state audit event ledger → versioned message lifecycle schema`,
           );
         }
+        // The two-kind operator schema predates durable resolution refs. Add
+        // those refs first so the fail-closed kind repair recognizes its exact shape.
+        ensureOperatorApprovalResolutionRefs(db);
         applied.push(...operatorApprovalMigration.repairOperatorApprovalSchema(db));
         const needsSessionWatchMigration =
           sessionWatchMigration.needsSessionWatchCursorProvenanceMigration(db, previousVersion);

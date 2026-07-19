@@ -2373,6 +2373,95 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
     expect(migratedSql.sql).toContain("'system-agent'");
   });
 
+  it("repairs pre-resolution-ref operator approvals through doctor", () => {
+    const stateDir = createTempStateDir();
+    const options = { env: { OPENCLAW_STATE_DIR: stateDir } };
+    const database = openOpenClawStateDatabase(options);
+    const databasePath = database.path;
+    const approvalId = "approval/pre-resolution-ref";
+    const expectedRef = buildApprovalResolutionRef({ approvalId, approvalKind: "exec" });
+    database.db
+      .prepare(
+        `INSERT INTO operator_approvals (
+          approval_id,
+          resolution_ref,
+          kind,
+          status,
+          presentation_json,
+          requested_by_device_token_auth,
+          reviewer_device_ids_json,
+          audience_session_keys_json,
+          runtime_epoch,
+          created_at_ms,
+          expires_at_ms,
+          updated_at_ms
+        ) VALUES (?, ?, 'exec', 'pending', ?, 0, '[]', '[]', 'legacy-runtime', 1, 1000, 1)`,
+      )
+      .run(
+        approvalId,
+        expectedRef,
+        JSON.stringify({
+          kind: "exec",
+          commandText: "echo migration",
+          commandPreview: null,
+          warningText: null,
+          host: "gateway",
+          nodeId: null,
+          agentId: "main",
+          allowedDecisions: ["allow-once", "deny"],
+        }),
+      );
+    closeOpenClawStateDatabaseForTest();
+
+    const { DatabaseSync } = requireNodeSqlite();
+    const legacyDb = new DatabaseSync(databasePath);
+    const currentSql = (
+      legacyDb
+        .prepare(
+          "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'operator_approvals'",
+        )
+        .get() as { sql: string }
+    ).sql;
+    const legacySql = currentSql
+      .replace(
+        /\n\s*resolution_ref TEXT NOT NULL CHECK \(\n\s*length\(resolution_ref\) = 43 AND resolution_ref NOT GLOB '\*\[\^A-Za-z0-9_-\]\*'\n\s*\),/u,
+        "",
+      )
+      .replace("'exec', 'plugin', 'system-agent'", "'exec', 'plugin'")
+      .replace(/\) STRICT$/u, ")");
+    const legacyColumns = (
+      legacyDb.prepare("PRAGMA table_info(operator_approvals)").all() as Array<{ name: string }>
+    )
+      .map((column) => column.name)
+      .filter((name) => name !== "resolution_ref")
+      .join(", ");
+    legacyDb.exec("ALTER TABLE operator_approvals RENAME TO operator_approvals_current");
+    legacyDb.exec(legacySql);
+    legacyDb.exec(`
+      INSERT INTO operator_approvals (${legacyColumns})
+      SELECT ${legacyColumns} FROM operator_approvals_current;
+      DROP TABLE operator_approvals_current;
+    `);
+    legacyDb.close();
+
+    expect(repairOpenClawStateDatabaseSchema(options)).toEqual({
+      changes: ["Migrated shared state operator approvals → OpenClaw system changes"],
+      warnings: [],
+    });
+
+    const reopened = openOpenClawStateDatabase(options);
+    expect(
+      reopened.db
+        .prepare("SELECT resolution_ref FROM operator_approvals WHERE approval_id = ?")
+        .get(approvalId),
+    ).toEqual({ resolution_ref: expectedRef });
+    const migratedSql = reopened.db
+      .prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'operator_approvals'")
+      .get() as { sql: string };
+    expect(migratedSql.sql).toContain("'system-agent'");
+    expect(migratedSql.sql).toContain(") STRICT");
+  });
+
   it("does not recursively recommend doctor when operator approval repair refuses a shape", () => {
     const stateDir = createTempStateDir();
     const options = { env: { OPENCLAW_STATE_DIR: stateDir } };
