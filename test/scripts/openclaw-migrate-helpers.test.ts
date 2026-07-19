@@ -35,13 +35,13 @@ function dotenvLiteral(value: string) {
   return `'${value.replaceAll("'", "\\'")}'`;
 }
 
-async function writeDockerStub(root: string, repoRoot: string) {
+async function writeDockerStub(root: string, repoRoot: string, initialState = "restarting") {
   const binDir = path.join(root, "bin");
   const dockerLog = path.join(root, "docker.log");
   const dockerStateFile = path.join(root, "docker-state");
   const composePath = path.join(repoRoot, "docker-compose.yml");
   await mkdir(binDir, { recursive: true });
-  await writeFile(dockerStateFile, "restarting\n");
+  await writeFile(dockerStateFile, `${initialState}\n`);
   await writeFile(composePath, "services:\n  openclaw-gateway:\n    image: test\n");
   const dockerStub = path.join(binDir, "docker");
   await writeFile(
@@ -53,6 +53,7 @@ case " $* " in
   *" ps --all -q openclaw-gateway "*) printf '%s\\n' test-container ;;
   *" inspect --format {{.State.Status}} test-container "*) cat "$DOCKER_STATE_FILE" ;;
   *" unpause test-container "*) printf '%s\\n' running > "$DOCKER_STATE_FILE" ;;
+  *" pause test-container "*) printf '%s\\n' paused > "$DOCKER_STATE_FILE" ;;
   *" stop openclaw-gateway "*)
     printf '%s\\n' exited > "$DOCKER_STATE_FILE"
     if [ -n "\${DOCKER_REMOVE_ON_STOP:-}" ]; then rm -rf -- "$DOCKER_REMOVE_ON_STOP"; fi
@@ -401,5 +402,61 @@ esac
     const startCall = `compose -f ${composePath} start openclaw-gateway`;
     expect(dockerCalls.indexOf(stopCall)).toBeGreaterThanOrEqual(0);
     expect(dockerCalls.indexOf(startCall)).toBeGreaterThan(dockerCalls.indexOf(stopCall));
+  });
+
+  it("returns a paused gateway to its original state after backup", async () => {
+    const root = tempRoot;
+    if (!root) {
+      throw new Error("missing temp root");
+    }
+
+    const repoRoot = path.join(root, "repo-paused-backup");
+    const configDir = path.join(root, "paused-config");
+    const workspaceDir = path.join(root, "paused-workspace");
+    const authProfileSecretDir = path.join(root, "paused-auth-profile-secrets");
+    const backupDir = path.join(root, "paused-backups");
+    await mkdir(repoRoot, { recursive: true });
+    await writeFixtureFile(path.join(configDir, "openclaw.json"), "{}\n");
+    await writeFixtureFile(path.join(workspaceDir, "digest.js"), "export {};\n");
+    await writeFixtureFile(path.join(authProfileSecretDir, "key.json"), "{}\n");
+    const { binDir, dockerLog, dockerStateFile } = await writeDockerStub(root, repoRoot, "paused");
+
+    const backup = runScript(
+      BACKUP_SCRIPT,
+      [
+        "--repo-root",
+        repoRoot,
+        "--config-dir",
+        configDir,
+        "--workspace-dir",
+        workspaceDir,
+        "--auth-profile-secret-dir",
+        authProfileSecretDir,
+        "--output-dir",
+        backupDir,
+        "--name",
+        "paused",
+      ],
+      {
+        DOCKER_LOG: dockerLog,
+        DOCKER_STATE_FILE: dockerStateFile,
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+      },
+    );
+
+    expect(backup.stderr).toBe("");
+    expect(backup.status).toBe(0);
+    expect(readFileSync(dockerStateFile, "utf8")).toBe("paused\n");
+    const dockerCalls = readFileSync(dockerLog, "utf8").trim().split("\n");
+    expect(dockerCalls.indexOf("unpause test-container")).toBeGreaterThanOrEqual(0);
+    expect(dockerCalls.findIndex((call) => call.endsWith("stop openclaw-gateway"))).toBeGreaterThan(
+      dockerCalls.indexOf("unpause test-container"),
+    );
+    expect(
+      dockerCalls.findIndex((call) => call.endsWith("start openclaw-gateway")),
+    ).toBeGreaterThan(dockerCalls.findIndex((call) => call.endsWith("stop openclaw-gateway")));
+    expect(dockerCalls.indexOf("pause test-container")).toBeGreaterThan(
+      dockerCalls.findIndex((call) => call.endsWith("start openclaw-gateway")),
+    );
   });
 });

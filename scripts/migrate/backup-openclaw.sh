@@ -137,6 +137,7 @@ checksum_path="${archive_path}.sha256"
 tmpdir="$(mktemp -d)"
 compose_file="$REPO_ROOT/docker-compose.yml"
 restart_gateway=0
+paused_gateway_container_ids=()
 archive_tmp=""
 checksum_tmp=""
 published_archive=0
@@ -166,6 +167,18 @@ cleanup() {
     if ! docker compose -f "$compose_file" start openclaw-gateway >/dev/null; then
       echo "ERROR: Backup finished, but openclaw-gateway could not be restarted." >&2
       status=1
+    else
+      for gateway_container_id in "${paused_gateway_container_ids[@]}"; do
+        if ! gateway_state="$(docker inspect --format '{{.State.Status}}' "$gateway_container_id")"; then
+          echo "ERROR: Backup finished, but the restored gateway state could not be inspected." >&2
+          status=1
+          continue
+        fi
+        if [[ "$gateway_state" != "paused" ]] && ! docker pause "$gateway_container_id" >/dev/null; then
+          echo "ERROR: Backup finished, but openclaw-gateway could not be paused again." >&2
+          status=1
+        fi
+      done
     fi
   fi
   exit "$status"
@@ -197,12 +210,17 @@ if [[ $STOP_FIRST -eq 1 ]]; then
         ;;
       paused)
         gateway_is_active=1
-        docker unpause "$gateway_container_id" >/dev/null || fail "Failed to unpause openclaw-gateway before backup."
+        paused_gateway_container_ids+=("$gateway_container_id")
         ;;
     esac
   done <<<"$gateway_container_ids"
   if [[ $gateway_is_active -eq 1 ]]; then
+    # From the first lifecycle mutation onward, the EXIT trap must return every
+    # originally active container to its prior running/paused state.
     restart_gateway=1
+    for gateway_container_id in "${paused_gateway_container_ids[@]}"; do
+      docker unpause "$gateway_container_id" >/dev/null || fail "Failed to unpause openclaw-gateway before backup."
+    done
     echo "==> Stopping gateway container for a consistent backup"
     if ! docker compose -f "$compose_file" stop openclaw-gateway >/dev/null; then
       fail "Failed to stop openclaw-gateway; no backup was created."
