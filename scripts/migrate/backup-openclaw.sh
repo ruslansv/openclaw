@@ -120,44 +120,6 @@ AUTH_PROFILE_SECRET_DIR="$(resolve_abs_path "$AUTH_PROFILE_SECRET_DIR")"
 [[ -d "$REPO_ROOT" ]] || fail "Repo root does not exist: $REPO_ROOT"
 validate_migration_layout "$CONFIG_DIR" "$WORKSPACE_DIR" "$AUTH_PROFILE_SECRET_DIR" "$ENV_FILE"
 
-# Restore intentionally rejects links that would escape the owning payload
-# root. Refuse them before publishing so every successful backup is restorable.
-python3 - "$CONFIG_DIR" "$WORKSPACE_DIR" "$AUTH_PROFILE_SECRET_DIR" <<'PY'
-import os
-import sys
-
-
-def fail(path, target):
-    raise SystemExit(f"Backup contains symlink outside its migrated directory: {path} -> {target}")
-
-
-roots = [os.path.abspath(root) for root in sys.argv[1:] if os.path.isdir(root)]
-for root_path in roots:
-    nested_roots = {
-        other
-        for other in roots
-        if other != root_path and other.startswith(f"{root_path}{os.sep}")
-    }
-    for current, directories, files in os.walk(root_path, followlinks=False):
-        directories[:] = [
-            name for name in directories if os.path.join(current, name) not in nested_roots
-        ]
-        for name in [*directories, *files]:
-            path = os.path.join(current, name)
-            if not os.path.islink(path):
-                continue
-            target = os.readlink(path)
-            if os.path.isabs(target):
-                fail(path, target)
-            resolved_target = os.path.abspath(os.path.join(current, target))
-            try:
-                inside_root = os.path.commonpath([root_path, resolved_target]) == root_path
-            except ValueError:
-                inside_root = False
-            if not inside_root:
-                fail(path, target)
-PY
-
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 BACKUP_NAME="${BACKUP_NAME:-openclaw-backup-${timestamp}}"
 case "$BACKUP_NAME" in
@@ -298,6 +260,42 @@ if [[ -d "$AUTH_PROFILE_SECRET_DIR" ]]; then
 else
   echo "WARNING: auth-profile secret directory not found; skipping: $AUTH_PROFILE_SECRET_DIR" >&2
 fi
+
+# Validate the completed, quiesced copy rather than the live source tree. This
+# closes the mutation window and guarantees every published archive is accepted
+# by the restore helper's payload-root link policy.
+python3 - \
+  "$stage/payload/config" \
+  "$stage/payload/workspace" \
+  "$stage/payload/auth-profile-secrets" <<'PY'
+import os
+import sys
+
+
+def fail(path, target):
+    raise SystemExit(f"Backup contains symlink outside its migrated directory: {path} -> {target}")
+
+
+for root in sys.argv[1:]:
+    if not os.path.isdir(root):
+        continue
+    root_path = os.path.abspath(root)
+    for current, directories, files in os.walk(root_path, followlinks=False):
+        for name in [*directories, *files]:
+            path = os.path.join(current, name)
+            if not os.path.islink(path):
+                continue
+            target = os.readlink(path)
+            if os.path.isabs(target):
+                fail(path, target)
+            resolved_target = os.path.abspath(os.path.join(current, target))
+            try:
+                inside_root = os.path.commonpath([root_path, resolved_target]) == root_path
+            except ValueError:
+                inside_root = False
+            if not inside_root:
+                fail(path, target)
+PY
 
 if [[ -f "$ENV_FILE" ]]; then
   echo "==> Including env file: $ENV_FILE"
