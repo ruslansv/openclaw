@@ -398,8 +398,8 @@ RUN set -eux; \
 ARG HOMEBREW_BREW_TAG=5.1.3
 ARG HOMEBREW_BREW_COMMIT=3a946229d190966cd725d5cc65e272d279a398ed
 RUN set -eux; \
-  git clone --depth 1 --branch "${HOMEBREW_BREW_TAG}" https://github.com/Homebrew/brew.git "${HOMEBREW_REPOSITORY}"; \
-  test "$(git -C "${HOMEBREW_REPOSITORY}" rev-parse HEAD)" = "${HOMEBREW_BREW_COMMIT}"; \
+  gosu node git clone --depth 1 --branch "${HOMEBREW_BREW_TAG}" https://github.com/Homebrew/brew.git "${HOMEBREW_REPOSITORY}"; \
+  test "$(gosu node git -C "${HOMEBREW_REPOSITORY}" rev-parse HEAD)" = "${HOMEBREW_BREW_COMMIT}"; \
   ln -sf ../Homebrew/bin/brew "${HOMEBREW_PREFIX}/bin/brew"; \
   chown -R node:node /home/linuxbrew
 RUN gosu node git -C "${HOMEBREW_REPOSITORY}" rev-parse --is-inside-work-tree | grep -qx true && \
