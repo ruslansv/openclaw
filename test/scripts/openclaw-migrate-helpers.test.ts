@@ -287,6 +287,40 @@ esac
     expect(overlapBackup.stderr).toContain("unsupported overlap");
     expect(existsSync(path.join(backupDir, "overlap-rejected.tar.gz"))).toBe(false);
 
+    const noDockerConfigDir = path.join(root, "no-docker-config");
+    const noDockerWorkspaceDir = path.join(root, "no-docker-workspace");
+    const noDockerAuthProfileSecretDir = path.join(root, "no-docker-auth-profile-secrets");
+    await writeFixtureFile(path.join(noDockerConfigDir, "original.json"), "original\n");
+    await writeFixtureFile(path.join(noDockerWorkspaceDir, "original.txt"), "original\n");
+    await writeFixtureFile(path.join(noDockerAuthProfileSecretDir, "original.key"), "original\n");
+    const noDockerRestore = runScript(
+      RESTORE_SCRIPT,
+      [
+        "--repo-root",
+        repoRoot,
+        "--archive",
+        archivePath,
+        "--env-file",
+        path.join(root, "no-docker.env"),
+        "--config-dir",
+        noDockerConfigDir,
+        "--workspace-dir",
+        noDockerWorkspaceDir,
+        "--auth-profile-secret-dir",
+        noDockerAuthProfileSecretDir,
+      ],
+      { PATH: "/usr/bin:/bin" },
+    );
+    expect(noDockerRestore.status).not.toBe(0);
+    expect(noDockerRestore.stderr).toContain("Missing required command: docker");
+    expect(readFileSync(path.join(noDockerConfigDir, "original.json"), "utf8")).toBe("original\n");
+    expect(readFileSync(path.join(noDockerWorkspaceDir, "original.txt"), "utf8")).toBe(
+      "original\n",
+    );
+    expect(readFileSync(path.join(noDockerAuthProfileSecretDir, "original.key"), "utf8")).toBe(
+      "original\n",
+    );
+
     const rollbackConfigDir = path.join(root, "rollback-config");
     const rollbackWorkspaceDir = path.join(root, "rollback-workspace");
     const rollbackAuthProfileSecretDir = path.join(root, "rollback-auth-profile-secrets");

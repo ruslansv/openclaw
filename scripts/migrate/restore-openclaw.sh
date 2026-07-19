@@ -580,7 +580,8 @@ if [[ -f "$extract_dir/payload/repo/.env" ]]; then
   chmod 600 "$env_staging"
 fi
 
-if [[ $STOP_FIRST -eq 1 ]] && command -v docker >/dev/null 2>&1; then
+if [[ $STOP_FIRST -eq 1 ]]; then
+  require_cmd docker
   compose_file="$REPO_ROOT/docker-compose.yml"
   [[ -f "$compose_file" ]] || fail "Compose file not found at $compose_file (use --no-stop to skip stopping the gateway)."
   if ! gateway_container_ids="$(docker compose -f "$compose_file" ps --all -q openclaw-gateway 2>/dev/null)"; then
