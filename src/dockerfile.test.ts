@@ -113,6 +113,7 @@ describe("Dockerfile", () => {
     expect(dockerfile).toContain(
       "ENV OPENCLAW_PLAYWRIGHT_BROWSERS_PATH=/opt/openclaw/ms-playwright",
     );
+    expect(dockerfile).toContain("ENV PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright");
     const browserDirectoryIndex = dockerfile.indexOf(
       'install -d -m 0755 -o node -g node "$OPENCLAW_PLAYWRIGHT_BROWSERS_PATH"',
     );
