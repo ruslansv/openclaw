@@ -112,6 +112,11 @@ describe("openclaw Docker migration helpers", () => {
     );
     await writeFixtureFile(path.join(configDir, "openclaw.json"), '{"ok":true}\n');
     await writeFixtureFile(path.join(configDir, "odd\nname.txt"), "newline-safe\n");
+    await writeFixtureFile(path.join(configDir, "odd\rname.txt"), "carriage-return-safe\n");
+    await writeFixtureFile(
+      path.join(configDir, "odd\u2028name.txt"),
+      "unicode-line-separator-safe\n",
+    );
     const fifoPath = path.join(configDir, "runtime.fifo");
     const fifo = spawnSync("mkfifo", [fifoPath]);
     expect(fifo.status).toBe(0);
@@ -419,6 +424,12 @@ esac
     );
     expect(readFileSync(path.join(restoredConfigDir, "odd\nname.txt"), "utf8")).toBe(
       "newline-safe\n",
+    );
+    expect(readFileSync(path.join(restoredConfigDir, "odd\rname.txt"), "utf8")).toBe(
+      "carriage-return-safe\n",
+    );
+    expect(readFileSync(path.join(restoredConfigDir, "odd\u2028name.txt"), "utf8")).toBe(
+      "unicode-line-separator-safe\n",
     );
     expect(lstatSync(path.join(restoredConfigDir, "runtime.fifo")).isFIFO()).toBe(true);
     expect(readFileSync(path.join(restoredWorkspaceDir, "scripts", "digest.js"), "utf8")).toBe(

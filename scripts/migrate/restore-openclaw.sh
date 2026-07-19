@@ -252,7 +252,12 @@ with tarfile.open(archive_path, "r:gz") as archive:
     if manifest_file is None:
         fail("could not read SHA256SUMS")
     manifest_entries = {}
-    for raw_line in manifest_file.read().decode("utf-8").splitlines():
+    manifest_text = manifest_file.read().decode("utf-8")
+    if not manifest_text.endswith("\n"):
+        fail("SHA256SUMS must end with a newline")
+    # Only LF delimits records. Other valid filename characters such as CR,
+    # NEL, and Unicode line separators must remain part of the path.
+    for raw_line in manifest_text[:-1].split("\n"):
         escaped = raw_line.startswith("\\")
         line = raw_line[1:] if escaped else raw_line
         match = re.fullmatch(r"([0-9a-f]{64})  (.+)", line)
