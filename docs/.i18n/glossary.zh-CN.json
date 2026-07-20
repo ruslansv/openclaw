@@ -156,6 +156,10 @@
     "target": "代码模式"
   },
   {
+    "source": "Swarm",
+    "target": "Swarm"
+  },
+  {
     "source": "Codex harness",
     "target": "Codex harness"
   },
@@ -1234,6 +1238,10 @@
   {
     "source": "Discord voice",
     "target": "Discord 语音"
+  },
+  {
+    "source": "Discord voice channels",
+    "target": "Discord 语音频道"
   },
   {
     "source": "Plugin management",
