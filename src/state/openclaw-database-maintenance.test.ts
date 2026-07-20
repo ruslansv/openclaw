@@ -165,6 +165,61 @@ describe("OpenClaw database maintenance schema validation", () => {
     }
   });
 
+  it("accepts a current agent database before the lazy board schema is created", () => {
+    const database = createAgentDatabase();
+    try {
+      database.exec(`
+        DROP TABLE board_widgets;
+        DROP TABLE board_tabs;
+      `);
+
+      expect(() =>
+        assertOpenClawAgentDatabaseForMaintenance(database, {
+          agentId: "worker-1",
+          pathname: "agent.sqlite",
+        }),
+      ).not.toThrow();
+    } finally {
+      database.close();
+    }
+  });
+
+  it("rejects a partially created board schema", () => {
+    const database = createAgentDatabase();
+    try {
+      database.exec("DROP TABLE board_widgets;");
+
+      expect(() =>
+        assertOpenClawAgentDatabaseForMaintenance(database, {
+          agentId: "worker-1",
+          pathname: "agent.sqlite",
+        }),
+      ).toThrow("missing table board_widgets");
+    } finally {
+      database.close();
+    }
+  });
+
+  it("rejects a case-variant non-table object occupying a board table name", () => {
+    const database = createAgentDatabase();
+    try {
+      database.exec(`
+        DROP TABLE board_widgets;
+        DROP TABLE board_tabs;
+        CREATE VIEW BOARD_TABS AS SELECT 'reserved' AS session_key;
+      `);
+
+      expect(() =>
+        assertOpenClawAgentDatabaseForMaintenance(database, {
+          agentId: "worker-1",
+          pathname: "agent.sqlite",
+        }),
+      ).toThrow("missing table board_tabs");
+    } finally {
+      database.close();
+    }
+  });
+
   it("accepts only canonical memory path FTS triggers", () => {
     const database = createAgentDatabase();
     try {

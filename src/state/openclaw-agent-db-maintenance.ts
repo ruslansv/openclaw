@@ -14,6 +14,7 @@ import {
   readSqliteUserVersion,
 } from "../infra/sqlite-user-version.js";
 import { normalizeAgentId } from "../routing/session-key.js";
+import { OPENCLAW_AGENT_SCHEMA_WITHOUT_BOARD_SQL } from "./openclaw-agent-board-schema.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "./openclaw-agent-db-contract.js";
 import {
   assertExistingAgentSchemaOwner,
@@ -72,9 +73,22 @@ export function assertOpenClawAgentDatabaseForMaintenance(
   assertSqliteSchemaContains(
     database,
     options.pathname,
-    OPENCLAW_AGENT_SCHEMA_SQL,
+    resolveAgentMaintenanceSchema(database),
     OPENCLAW_AGENT_MAINTENANCE_SCHEMA_COMPATIBILITY,
   );
+}
+
+function resolveAgentMaintenanceSchema(database: DatabaseSync): string {
+  const boardObjects = database
+    .prepare(
+      "SELECT name FROM sqlite_schema WHERE name COLLATE NOCASE IN ('board_tabs', 'board_widgets')",
+    )
+    .all();
+  // Board tables are an additive v13 surface created on first board write. If
+  // either exists, validate the complete canonical pair instead of accepting drift.
+  return boardObjects.length === 0
+    ? OPENCLAW_AGENT_SCHEMA_WITHOUT_BOARD_SQL
+    : OPENCLAW_AGENT_SCHEMA_SQL;
 }
 
 /** Upgrade a supported older owned schema before strict offline maintenance. */
