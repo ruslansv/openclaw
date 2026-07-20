@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 function readScript(path: string): string {
@@ -32,13 +32,22 @@ function makeMismatchedWrapperRepo() {
   const canonicalPath = join(root, "canonical");
   const linkedPath = join(root, "linked");
   const originPath = join(root, "origin.git");
+  const binPath = join(root, "bin");
   mkdirSync(home, { recursive: true });
+  mkdirSync(binPath, { recursive: true });
+  // The fixture exercises wrapper trust, not developer-machine tool availability.
+  for (const command of ["jq", "pnpm", "rg"]) {
+    const commandPath = join(binPath, command);
+    writeFileSync(commandPath, "#!/bin/sh\nexit 0\n");
+    chmodSync(commandPath, 0o755);
+  }
 
   const fixtureEnv = {
     ...process.env,
     GIT_CONFIG_GLOBAL: "/dev/null",
     GIT_CONFIG_NOSYSTEM: "1",
     HOME: home,
+    PATH: `${binPath}${delimiter}${process.env.PATH ?? ""}`,
     XDG_CONFIG_HOME: join(home, ".config"),
   };
   const git = (cwd: string, args: string[]) => {
