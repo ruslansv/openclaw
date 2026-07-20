@@ -728,6 +728,22 @@ describe("session store writer queue", () => {
     expect(store["agent:main:metadata"]?.sessionId).toBeUndefined();
   });
 
+  it("preserves a transcript pointer on sessionless metadata", async () => {
+    const { storePath } = await makeTmpStore({
+      "agent:main:metadata": {
+        sessionFile: " /tmp/openclaw/agents/main/sessions/legacy.jsonl ",
+        updatedAt: Date.now(),
+      },
+    } as unknown as Record<string, SessionEntry>);
+
+    const store = loadSessionStore(storePath, { skipCache: true });
+
+    expect(store["agent:main:metadata"]?.sessionFile).toBe(
+      "/tmp/openclaw/agents/main/sessions/legacy.jsonl",
+    );
+    expect(store["agent:main:metadata"]?.sessionId).toBeUndefined();
+  });
+
   it("skips session store disk writes when payload is unchanged", async () => {
     const key = "agent:main:no-op-save";
     const { storePath } = await makeTmpStore({

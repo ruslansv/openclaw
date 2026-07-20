@@ -53,6 +53,11 @@ function normalizeOptionalTrimmedString(value: unknown): string | undefined {
 function normalizeMetadataOnlyEntry(value: Record<string, unknown>): SessionEntry | undefined {
   const next: Partial<SessionEntry> = {};
 
+  const sessionFile = normalizeOptionalTrimmedString(value.sessionFile);
+  if (sessionFile) {
+    next.sessionFile = sessionFile;
+  }
+
   const label = parseSessionLabel(value.label);
   if (label.ok) {
     next.label = label.label;
