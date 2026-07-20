@@ -2625,7 +2625,8 @@ describeControlUiE2e("Control UI mocked Gateway E2E", () => {
         message: queuedPrompt,
         sessionKey: "main",
       });
-      await queue.getByText(queuedPrompt).waitFor({ state: "detached", timeout: 10_000 });
+      await queue.getByText("Steered").waitFor({ timeout: 10_000 });
+      await queue.getByText(queuedPrompt).waitFor({ timeout: 10_000 });
     } finally {
       await closeBrowserContext(context);
     }

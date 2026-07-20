@@ -47,8 +47,19 @@ export function ensureOpenClawStatePermissions(pathname: string, env: NodeJS.Pro
     bestEffortChmodSync(dir, OPENCLAW_STATE_DIR_MODE);
   }
   for (const candidate of resolveSqliteDatabaseFilePaths(pathname)) {
-    if (existsSync(candidate)) {
+    // Skip absent sidecars so chmod-less filesystems do not treat them as
+    // permission failures. The catch still closes the exists/chmod race.
+    if (!existsSync(candidate)) {
+      continue;
+    }
+    try {
       bestEffortChmodSync(candidate, OPENCLAW_STATE_FILE_MODE);
+    } catch (error) {
+      // SQLite can remove transient sidecars between discovery and chmod.
+      // A vanished file needs no tightening; all other failures stay fatal.
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
     }
   }
 }

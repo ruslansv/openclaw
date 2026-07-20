@@ -13,6 +13,7 @@ const chmodFailHook = vi.hoisted(() => ({
   error: undefined as Error | undefined,
   calls: 0,
   failProbe: true,
+  targetSuffix: undefined as string | undefined,
 }));
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -20,7 +21,10 @@ vi.mock("node:fs", async (importOriginal) => {
   const chmodSync: typeof actual.chmodSync = ((target: unknown, mode: unknown) => {
     chmodFailHook.calls += 1;
     const isProbe = String(target).includes(".openclaw-chmod-probe-");
-    if (chmodFailHook.error && (chmodFailHook.failProbe || !isProbe)) {
+    const matchesTarget =
+      chmodFailHook.targetSuffix === undefined ||
+      String(target).endsWith(chmodFailHook.targetSuffix);
+    if (chmodFailHook.error && matchesTarget && (chmodFailHook.failProbe || !isProbe)) {
       throw chmodFailHook.error;
     }
     return (actual.chmodSync as (...args: unknown[]) => unknown)(target, mode);
@@ -35,6 +39,7 @@ const {
   repairOpenClawStateDatabaseSchema,
   runOpenClawStateWriteTransaction,
 } = await import("./openclaw-state-db.js");
+const { ensureOpenClawStatePermissions } = await import("./openclaw-state-db-permissions.js");
 
 function chmodError(code: string): Error {
   const err = new Error(`${code}: chmod failed`) as NodeJS.ErrnoException;
@@ -53,6 +58,7 @@ describe("state database permission hardening without chmod support", () => {
     chmodFailHook.error = undefined;
     chmodFailHook.calls = 0;
     chmodFailHook.failProbe = true;
+    chmodFailHook.targetSuffix = undefined;
     closeOpenClawStateDatabaseForTest();
     if (stateDir) {
       fs.rmSync(stateDir, { recursive: true, force: true });
@@ -133,6 +139,20 @@ describe("state database permission hardening without chmod support", () => {
     expect(() => openOpenClawStateDatabase({ env: { OPENCLAW_STATE_DIR: stateDir } })).toThrow(
       /EACCES/,
     );
+  });
+
+  it("ignores ENOENT when a SQLite sidecar vanishes during hardening", () => {
+    stateDir = fs.mkdtempSync(join(tmpdir(), "openclaw-state-chmod-"));
+    const pathname = join(stateDir, "openclaw.sqlite");
+    fs.writeFileSync(pathname, "");
+    fs.writeFileSync(`${pathname}-wal`, "");
+    chmodFailHook.error = chmodError("ENOENT");
+    chmodFailHook.targetSuffix = "-wal";
+
+    expect(() =>
+      ensureOpenClawStatePermissions(pathname, { OPENCLAW_STATE_DIR: stateDir }),
+    ).not.toThrow();
+    expect(chmodFailHook.calls).toBeGreaterThan(0);
   });
 
   it("repairs the schema when chmodSync throws ENOTSUP", () => {
