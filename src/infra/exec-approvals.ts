@@ -1141,18 +1141,34 @@ function sleepExecApprovalsSyncLockRetry(): void {
 function removeOwnedExecApprovalsLock(
   lock: ExecApprovalsSyncLock,
   options: { requirePayloadMatch: boolean },
-): void {
+): boolean {
   try {
     const current = fs.lstatSync(lock.lockPath);
     if (
+      current.isFile() &&
       current.dev === lock.device &&
       current.ino === lock.inode &&
       (!options.requirePayloadMatch || fs.readFileSync(lock.lockPath, "utf8") === lock.raw)
     ) {
       fs.rmSync(lock.lockPath, { force: true });
+      return true;
     }
-  } catch {
-    // Best-effort release; a changed path belongs to another lock owner.
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT";
+  }
+}
+
+function releaseOwnedExecApprovalsLock(lock: ExecApprovalsSyncLock): void {
+  // Shared Docker filesystems can transiently fail a path probe or unlink. Retry only
+  // the exact inode and payload we created so one release glitch cannot strand policy.
+  for (let attempt = 0; attempt <= EXEC_APPROVALS_SYNC_LOCK_RETRIES; attempt += 1) {
+    if (removeOwnedExecApprovalsLock(lock, { requirePayloadMatch: true })) {
+      return;
+    }
+    if (attempt < EXEC_APPROVALS_SYNC_LOCK_RETRIES) {
+      sleepExecApprovalsSyncLockRetry();
+    }
   }
 }
 
@@ -1228,8 +1244,11 @@ function withExecApprovalsLockSync<T>(fn: () => T): T {
   try {
     return fn();
   } finally {
-    fs.closeSync(lock.descriptor);
-    removeOwnedExecApprovalsLock(lock, { requirePayloadMatch: true });
+    try {
+      fs.closeSync(lock.descriptor);
+    } finally {
+      releaseOwnedExecApprovalsLock(lock);
+    }
   }
 }
 

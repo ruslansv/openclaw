@@ -301,6 +301,32 @@ describe("exec approvals store helpers", () => {
     }
   });
 
+  it("retries transient synchronous lock release failures", () => {
+    const dir = createHomeDir();
+    const lockPath = `${approvalsFilePath(dir)}.lock`;
+    const actualRmSync = fs.rmSync.bind(fs);
+    let lockRemovalAttempts = 0;
+    vi.spyOn(fs, "rmSync").mockImplementation((target, options) => {
+      if (String(target) === lockPath) {
+        lockRemovalAttempts += 1;
+        if (lockRemovalAttempts === 1) {
+          throw Object.assign(new Error("transient lock release failure"), { code: "EBUSY" });
+        }
+      }
+      return actualRmSync(target, options as never);
+    });
+
+    saveExecApprovals({
+      version: 1,
+      defaults: { security: "full", ask: "off" },
+      agents: {},
+    });
+
+    expect(lockRemovalAttempts).toBe(2);
+    expect(fs.existsSync(lockPath)).toBe(false);
+    expect(loadExecApprovals().defaults).toMatchObject({ security: "full", ask: "off" });
+  });
+
   it("keeps custom-state approvals independent from the default state", async () => {
     const dir = createHomeDir();
     const stateDir = path.join(dir, "custom-state");
