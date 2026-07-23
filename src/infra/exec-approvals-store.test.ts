@@ -327,6 +327,35 @@ describe("exec approvals store helpers", () => {
     expect(loadExecApprovals().defaults).toMatchObject({ security: "full", ask: "off" });
   });
 
+  it("releases a synchronous lock when descriptor and pathname identities drift", () => {
+    const dir = createHomeDir();
+    const lockPath = `${approvalsFilePath(dir)}.lock`;
+    const actualFstatSync = fs.fstatSync.bind(fs);
+    let injectedIdentityDrift = false;
+    vi.spyOn(fs, "fstatSync").mockImplementation((descriptor, options) => {
+      const stat = actualFstatSync(descriptor, options as never);
+      if (injectedIdentityDrift) {
+        return stat;
+      }
+      injectedIdentityDrift = true;
+      return new Proxy(stat, {
+        get(target, property, receiver) {
+          return property === "ino" ? target.ino + 1 : Reflect.get(target, property, receiver);
+        },
+      });
+    });
+
+    saveExecApprovals({
+      version: 1,
+      defaults: { security: "full", ask: "off" },
+      agents: {},
+    });
+
+    expect(injectedIdentityDrift).toBe(true);
+    expect(fs.existsSync(lockPath)).toBe(false);
+    expect(loadExecApprovals().defaults).toMatchObject({ security: "full", ask: "off" });
+  });
+
   it("keeps custom-state approvals independent from the default state", async () => {
     const dir = createHomeDir();
     const stateDir = path.join(dir, "custom-state");

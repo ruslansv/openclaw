@@ -14,6 +14,7 @@ import {
   AgentDeletionCommitUncertainError,
   isAgentDeletionBlocked,
 } from "../agents/agent-lifecycle-registry.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
 import { DEFAULT_AGENT_ID, normalizeAgentId } from "../routing/session-key.js";
 import { resolveGlobalMap } from "../shared/global-singleton.js";
 import { getFileLockProcessStartTime } from "../shared/pid-alive.js";
@@ -337,6 +338,7 @@ const EXEC_APPROVALS_LOCK_OPTIONS = {
 const EXEC_APPROVALS_LOCK_QUEUE = resolveGlobalMap<string, Promise<unknown>>(
   Symbol.for("openclaw.execApprovalsLockQueue"),
 );
+const execApprovalsLog = createSubsystemLogger("exec-approvals");
 let execApprovalsProcessStartTime: number | null | undefined;
 
 function getExecApprovalsProcessStartTime(): number | null {
@@ -347,6 +349,13 @@ function getExecApprovalsProcessStartTime(): number | null {
 }
 const EXEC_APPROVALS_SYNC_LOCK_RETRIES = 10;
 const EXEC_APPROVALS_SYNC_LOCK_RETRY_MS = 20;
+const EXEC_APPROVALS_SYNC_LOCK_OWNERSHIP_MARKER_BYTES = 16;
+const EXEC_APPROVALS_SYNC_LOCK_OWNERSHIP_MARKER_BITS =
+  EXEC_APPROVALS_SYNC_LOCK_OWNERSHIP_MARKER_BYTES * 8;
+const EXEC_APPROVALS_SYNC_LOCK_OWNERSHIP_MARKER_PREFIX = "\t".repeat(8);
+const EXEC_APPROVALS_SYNC_LOCK_OWNERSHIP_MARKER_PATTERN = new RegExp(
+  `\\n(${EXEC_APPROVALS_SYNC_LOCK_OWNERSHIP_MARKER_PREFIX}[ \\t]{${EXEC_APPROVALS_SYNC_LOCK_OWNERSHIP_MARKER_BITS}})\\n$`,
+);
 
 function hashExecApprovalsRaw(raw: string | null): string {
   // Preserve existing hashes for present files so mixed-version native/CLI
@@ -1094,8 +1103,23 @@ type ExecApprovalsSyncLock = {
   lockPath: string;
   device: number;
   inode: number;
+  ownershipMarker: string;
   raw: string;
 };
+
+function createExecApprovalsSyncLockOwnershipMarker(): string {
+  let marker = EXEC_APPROVALS_SYNC_LOCK_OWNERSHIP_MARKER_PREFIX;
+  for (const byte of randomBytes(EXEC_APPROVALS_SYNC_LOCK_OWNERSHIP_MARKER_BYTES)) {
+    for (let bit = 7; bit >= 0; bit -= 1) {
+      marker += byte & (1 << bit) ? "\t" : " ";
+    }
+  }
+  return marker;
+}
+
+function readExecApprovalsSyncLockOwnershipMarker(raw: string): string | undefined {
+  return EXEC_APPROVALS_SYNC_LOCK_OWNERSHIP_MARKER_PATTERN.exec(raw)?.[1];
+}
 
 function readLockPayload(raw: string): Record<string, unknown> | null {
   try {
@@ -1144,24 +1168,30 @@ function removeOwnedExecApprovalsLock(
 ): boolean {
   try {
     const current = fs.lstatSync(lock.lockPath);
-    if (
-      current.isFile() &&
-      current.dev === lock.device &&
-      current.ino === lock.inode &&
-      (!options.requirePayloadMatch || fs.readFileSync(lock.lockPath, "utf8") === lock.raw)
-    ) {
-      fs.rmSync(lock.lockPath, { force: true });
-      return true;
+    if (!current.isFile()) {
+      return false;
     }
-    return false;
+    if (options.requirePayloadMatch) {
+      const currentRaw = fs.readFileSync(lock.lockPath, "utf8");
+      if (
+        currentRaw !== lock.raw ||
+        readExecApprovalsSyncLockOwnershipMarker(currentRaw) !== lock.ownershipMarker
+      ) {
+        return false;
+      }
+    } else if (current.dev !== lock.device || current.ino !== lock.inode) {
+      return false;
+    }
+    fs.rmSync(lock.lockPath, { force: true });
+    return true;
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "ENOENT";
   }
 }
 
 function releaseOwnedExecApprovalsLock(lock: ExecApprovalsSyncLock): void {
-  // Shared Docker filesystems can transiently fail a path probe or unlink. Retry only
-  // the exact inode and payload we created so one release glitch cannot strand policy.
+  // Virtual filesystems can drift descriptor/path identities. The private token
+  // preserves ownership while retries cover transient path probes and unlinks.
   for (let attempt = 0; attempt <= EXEC_APPROVALS_SYNC_LOCK_RETRIES; attempt += 1) {
     if (removeOwnedExecApprovalsLock(lock, { requirePayloadMatch: true })) {
       return;
@@ -1170,6 +1200,10 @@ function releaseOwnedExecApprovalsLock(lock: ExecApprovalsSyncLock): void {
       sleepExecApprovalsSyncLockRetry();
     }
   }
+  execApprovalsLog.error("Failed to release owned exec approvals lock", {
+    lockPath: lock.lockPath,
+    attempts: EXEC_APPROVALS_SYNC_LOCK_RETRIES + 1,
+  });
 }
 
 function acquireExecApprovalsLockSync(filePath: string): ExecApprovalsSyncLock {
@@ -1184,7 +1218,10 @@ function acquireExecApprovalsLockSync(filePath: string): ExecApprovalsSyncLock {
   if (starttime !== null) {
     payload.starttime = starttime;
   }
-  const raw = `${JSON.stringify(payload, null, 2)}\n`;
+  const ownershipMarker = createExecApprovalsSyncLockOwnershipMarker();
+  // Keep the random marker outside the parsed payload so liveness checks cannot
+  // expose it, while JSON.parse still accepts the trailing whitespace.
+  const raw = `${JSON.stringify(payload, null, 2)}\n${ownershipMarker}\n`;
   for (let attempt = 0; attempt <= EXEC_APPROVALS_SYNC_LOCK_RETRIES; attempt += 1) {
     let descriptor: number;
     try {
@@ -1225,6 +1262,7 @@ function acquireExecApprovalsLockSync(filePath: string): ExecApprovalsSyncLock {
       lockPath,
       device: stat.dev,
       inode: stat.ino,
+      ownershipMarker,
       raw,
     };
     try {

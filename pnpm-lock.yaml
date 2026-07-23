@@ -83,8 +83,8 @@ importers:
         specifier: workspace:*
         version: link:packages/ai
       '@openclaw/fs-safe':
-        specifier: 0.4.4
-        version: 0.4.4
+        specifier: 0.4.5
+        version: 0.4.5
       '@openclaw/proxyline':
         specifier: 0.3.3
         version: 0.3.3(undici@8.5.0)
@@ -3699,8 +3699,8 @@ packages:
     engines: {node: '>=22'}
     hasBin: true
 
-  '@openclaw/fs-safe@0.4.4':
-    resolution: {integrity: sha512-QklFGshaQDXl7RFyxPeSN/1moYq/X+SJcmX/nY3oXJO/tzVasL9i1g3m4nJqIfd6qUTJQjeu+41aIqw8+SbUww==}
+  '@openclaw/fs-safe@0.4.5':
+    resolution: {integrity: sha512-1r3A5L6nqzQy61duqNQ83fBPzitVwZlu/uDX2YHhKcao4RPa91wWLX0tZkHNaeQi14sInRGIbId0LFkQsp6bqQ==}
     engines: {node: '>=22'}
 
   '@openclaw/libterminal@0.3.2':
@@ -10069,7 +10069,7 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  '@openclaw/fs-safe@0.4.4':
+  '@openclaw/fs-safe@0.4.5':
     optionalDependencies:
       jszip: 3.10.1
       tar: 7.5.19
