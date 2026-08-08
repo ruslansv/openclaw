@@ -134,6 +134,10 @@ describe("scripts/docker/setup.sh", () => {
     expect(extraCompose).toContain(
       `${join(activeSandbox.rootDir, "auth-profile-secrets")}:/home/node/.config/openclaw`,
     );
+    expect(extraCompose).toContain("openclaw-init:");
+    expect(extraCompose).toContain(
+      '  openclaw-init:\n    volumes:\n      - "openclaw-home:/home/node"',
+    );
     expect(extraCompose).toContain("volumes:");
     expect(extraCompose).toContain("openclaw-home:");
     const log = await readDockerLog(activeSandbox);
@@ -950,6 +954,16 @@ describe("scripts/docker/setup.sh", () => {
   it("keeps docker-compose timezone env defaults aligned across services", async () => {
     const compose = await readFile(join(repoRoot, "docker-compose.yml"), "utf8");
     expect(compose.match(/TZ: \$\{OPENCLAW_TZ:-UTC\}/g)).toHaveLength(2);
+  });
+
+  it("runs ownership repair before the gateway without changing its runtime user", async () => {
+    const compose = await readFile(join(repoRoot, "docker-compose.yml"), "utf8");
+
+    expect(compose).toMatch(/openclaw-init:[\s\S]*?\n {4}user: root/u);
+    expect(compose).toMatch(
+      /openclaw-gateway:[\s\S]*?depends_on:\n {6}openclaw-init:\n {8}condition: service_completed_successfully/u,
+    );
+    expect(compose).not.toMatch(/openclaw-gateway:[\s\S]*?\n {4}user: root/u);
   });
 
   it("pins container-side state, workspace, and config dirs on both services so host .env paths cannot leak (#77436)", async () => {

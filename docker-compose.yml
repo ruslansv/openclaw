@@ -1,7 +1,59 @@
 services:
+  openclaw-init:
+    image: ${OPENCLAW_IMAGE:-openclaw:local}
+    # Repair node-owned runtime dirs before every gateway start. This also
+    # covers nested named volumes supplied by a local Compose overlay.
+    user: root
+    environment:
+      HOME: /home/node
+      PNPM_HOME: /home/node/.local/share/pnpm
+      NPM_CONFIG_PREFIX: /home/node/.npm-global
+      GOPATH: /home/node/go
+    volumes:
+      - "${OPENCLAW_CONFIG_DIR:-${HOME:-/tmp}/.openclaw}:/home/node/.openclaw"
+      - "${OPENCLAW_WORKSPACE_DIR:-${HOME:-/tmp}/.openclaw/workspace}:/home/node/.openclaw/workspace"
+    init: true
+    restart: "no"
+    entrypoint:
+      - sh
+      - -lc
+      - |
+        set -eu
+        PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+        export PATH
+        for path in \
+          /home/node/.openclaw /home/node/.openclaw/workspace \
+          /home/node/.cache /home/node/.npm /home/node/.local /home/node/.local/share \
+          /home/node/.local/share/pnpm /home/node/.npm-global /home/node/.npm-global/bin \
+          /home/node/go /home/node/go/bin; do
+          if [ -L "$$path" ]; then
+            echo "Refusing symlinked runtime directory: $$path" >&2
+            exit 1
+          fi
+          /usr/bin/mkdir -p "$$path"
+        done
+        for root in /home/node/.cache /home/node/.local /home/node/.npm /home/node/.npm-global /home/node/go; do
+          /usr/bin/find -P "$$root" -xdev -execdir /usr/bin/chown -h node:node {} +
+        done
+        # The separately mounted workspace can share a device id with config,
+        # so prune it explicitly instead of relying on -xdev.
+        /usr/bin/find -P /home/node/.openclaw -xdev \
+          -path /home/node/.openclaw/workspace -prune -o \
+          -execdir /usr/bin/chown -h node:node {} +
+        # Preserve host ownership for workspace files; only OpenClaw's private
+        # workspace metadata must remain writable by the runtime user.
+        if [ -d /home/node/.openclaw/workspace/.openclaw ] && \
+          [ ! -L /home/node/.openclaw/workspace/.openclaw ]; then
+          /usr/bin/find -P /home/node/.openclaw/workspace/.openclaw -xdev \
+            -execdir /usr/bin/chown -h node:node {} +
+        fi
+
   openclaw-gateway:
     image: ${OPENCLAW_IMAGE:-openclaw:local}
-    build: .
+    build:
+      context: .
+      args:
+        OPENCLAW_EXTENSIONS: ${OPENCLAW_EXTENSIONS:-}
     env_file:
       - path: .env
         required: false
@@ -69,6 +121,9 @@ services:
       - "${OPENCLAW_MSTEAMS_PORT:-3978}:3978"
     init: true
     restart: unless-stopped
+    depends_on:
+      openclaw-init:
+        condition: service_completed_successfully
     command:
       [
         "node",

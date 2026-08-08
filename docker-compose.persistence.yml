@@ -1,0 +1,26 @@
+# Optional deployment overlay for keeping high-churn SQLite/session state in
+# external named volumes. Create the volumes once, then include this file in
+# COMPOSE_FILE after docker-compose.yml. External volumes survive `down -v`.
+services:
+  openclaw-init:
+    volumes:
+      - openclaw-runtime-state:/home/node/.openclaw/state
+      - openclaw-runtime-agents:/home/node/.openclaw/agents
+
+  openclaw-gateway:
+    volumes:
+      - openclaw-runtime-state:/home/node/.openclaw/state
+      - openclaw-runtime-agents:/home/node/.openclaw/agents
+
+  openclaw-cli:
+    volumes:
+      - openclaw-runtime-state:/home/node/.openclaw/state
+      - openclaw-runtime-agents:/home/node/.openclaw/agents
+
+volumes:
+  openclaw-runtime-state:
+    name: ${OPENCLAW_STATE_VOLUME:-openclaw_runtime_state_v1}
+    external: true
+  openclaw-runtime-agents:
+    name: ${OPENCLAW_AGENTS_VOLUME:-openclaw_runtime_agents_v1}
+    external: true

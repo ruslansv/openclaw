@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 const repoRoot = resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 const dockerfilePath = join(repoRoot, "Dockerfile");
 const dockerComposePath = join(repoRoot, "docker-compose.yml");
+const dockerPersistenceComposePath = join(repoRoot, "docker-compose.persistence.yml");
 const dockerInstallDocsPath = join(repoRoot, "docs/install/docker.md");
 const composeSetupScriptPath = join(repoRoot, "scripts/e2e/compose-setup.sh");
 const dockerReleaseWorkflowPath = join(repoRoot, ".github/workflows/docker-release.yml");
@@ -712,5 +713,61 @@ describe("Dockerfile", () => {
     expect(dockerfile).toContain(
       "stat -c '%U:%G %a' /home/node/.config/openclaw | grep -qx 'node:node 700'",
     );
+  });
+
+  it("pins Docker workflow tools and keeps them available in login shells", async () => {
+    const dockerfile = await readFile(dockerfilePath, "utf8");
+
+    expect(dockerfile).toContain("ARG GO_VERSION=1.26.5");
+    expect(dockerfile).toContain(
+      "ARG GO_LINUX_AMD64_SHA256=5c2c3b16caefa1d968a94c1daca04a7ca301a496d9b086e17ad77bb81393f053",
+    );
+    expect(dockerfile).toContain(
+      "ARG GO_LINUX_ARM64_SHA256=fe4789e92b1f33358680864bbe8704289e7bb5fc207d80623c308935bd696d49",
+    );
+    expect(dockerfile).toContain("ARG GOGCLI_DEFAULT_TAG=v0.34.1");
+    expect(dockerfile).toContain("https://github.com/openclaw/gogcli/releases/download/$tag");
+    expect(dockerfile).toContain("ARG HOMEBREW_BREW_TAG=6.0.15");
+    expect(dockerfile).toContain(
+      "ARG HOMEBREW_BREW_COMMIT=7b0f22a4ab77567edef114c8dfc423fb96e2fbaa",
+    );
+    expect(dockerfile).toContain("/etc/profile.d/openclaw-node-path.sh");
+    expect(dockerfile).not.toContain("https://go.dev/dl/?mode=json");
+  });
+
+  it("keeps baked Playwright Chromium outside replaceable home volumes", async () => {
+    const dockerfile = await readFile(dockerfilePath, "utf8");
+
+    expect(dockerfile).toContain(
+      "ENV OPENCLAW_PLAYWRIGHT_BROWSERS_PATH=/opt/openclaw/ms-playwright",
+    );
+    expect(dockerfile).toContain("ENV PLAYWRIGHT_BROWSERS_PATH=/opt/openclaw/ms-playwright");
+    expect(dockerfile).toContain("/usr/local/bin/openclaw-playwright-chromium");
+  });
+
+  it("repairs runtime ownership before starting the gateway", async () => {
+    const compose = await readFile(dockerComposePath, "utf8");
+    const initIndex = compose.indexOf("  openclaw-init:");
+    const gatewayIndex = compose.indexOf("  openclaw-gateway:");
+
+    expect(initIndex).toBeGreaterThan(-1);
+    expect(gatewayIndex).toBeGreaterThan(initIndex);
+    expect(compose).toMatch(/openclaw-gateway:[\s\S]*?depends_on:[\s\S]*?openclaw-init:/u);
+    expect(compose).toContain("condition: service_completed_successfully");
+    expect(compose).toContain("Refusing symlinked runtime directory");
+  });
+
+  it("offers protected external volumes for active SQLite and agent state", async () => {
+    const compose = await readFile(dockerPersistenceComposePath, "utf8");
+
+    expect(compose).toContain("external: true");
+    expect(compose.match(/openclaw-runtime-state:\/home\/node\/.openclaw\/state/gu)).toHaveLength(
+      3,
+    );
+    expect(compose.match(/openclaw-runtime-agents:\/home\/node\/.openclaw\/agents/gu)).toHaveLength(
+      3,
+    );
+    expect(compose).toContain("OPENCLAW_STATE_VOLUME:-openclaw_runtime_state_v1");
+    expect(compose).toContain("OPENCLAW_AGENTS_VOLUME:-openclaw_runtime_agents_v1");
   });
 });

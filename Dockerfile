@@ -216,6 +216,16 @@ LABEL org.opencontainers.image.source="https://github.com/openclaw/openclaw" \
 
 WORKDIR /app
 
+# Keep user-installed tools and package managers on the runtime PATH. The
+# matching directories remain writable when invoked from agent shell sessions.
+ENV PNPM_HOME=/home/node/.local/share/pnpm
+ENV NPM_CONFIG_PREFIX=/home/node/.npm-global
+ENV GOPATH=/home/node/go
+ENV HOMEBREW_PREFIX=/home/linuxbrew/.linuxbrew
+ENV HOMEBREW_CELLAR=/home/linuxbrew/.linuxbrew/Cellar
+ENV HOMEBREW_REPOSITORY=/home/linuxbrew/.linuxbrew/Homebrew
+ENV PATH="/usr/local/go/bin:${PNPM_HOME}:${NPM_CONFIG_PREFIX}/bin:${GOPATH}/bin:${HOMEBREW_PREFIX}/bin:${HOMEBREW_PREFIX}/sbin:${PATH}"
+
 # Install runtime system utilities missing from bookworm-slim.
 # `ca-certificates` ships in `bookworm` (full) but not in `bookworm-slim`,
 # so it must be installed explicitly here. Without it `/etc/ssl/certs/`
@@ -259,7 +269,17 @@ RUN install -d -m 0755 "$COREPACK_HOME" && \
     done && \
     chmod -R a+rX "$COREPACK_HOME"
 
-# Install additional system packages needed by your skills or extensions.
+RUN install -d -m 0755 -o node -g node \
+      /home/node/.cache \
+      "$PNPM_HOME" \
+      "$NPM_CONFIG_PREFIX/bin" \
+      "$GOPATH/bin" \
+      "$HOMEBREW_REPOSITORY" \
+      "$HOMEBREW_CELLAR" \
+      "$HOMEBREW_PREFIX/bin"
+
+# Install baseline tools used by Docker-hosted workflows plus any additional
+# system packages requested by skills or plugins.
 # Example: docker build --build-arg OPENCLAW_IMAGE_APT_PACKAGES="python3 wget" .
 # Legacy alias: OPENCLAW_DOCKER_APT_PACKAGES is still accepted as a fallback.
 ARG OPENCLAW_IMAGE_APT_PACKAGES
@@ -267,11 +287,22 @@ ARG OPENCLAW_DOCKER_APT_PACKAGES=""
 ENV PATH="/home/node/.local/bin:${PATH}"
 RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,id=openclaw-bookworm-apt-lists,target=/var/lib/apt,sharing=locked \
+    set -eux; \
+    base_packages="\
+cron gosu wget jq unzip ripgrep file python3-pip python3-venv xvfb xauth \
+libgbm1 libnss3 libasound2 libatk-bridge2.0-0 libdrm2 libxkbcommon0 \
+libxcomposite1 libxdamage1 libxrandr2 libxss1 libgtk-3-0"; \
     packages="${OPENCLAW_IMAGE_APT_PACKAGES:-$OPENCLAW_DOCKER_APT_PACKAGES}"; \
-    if [ -n "$packages" ]; then \
-      apt-get update && \
-      DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $packages; \
-    fi
+    extra_packages=""; \
+    for package in $packages; do \
+      case " $base_packages " in \
+        *" $package "*) ;; \
+        *) extra_packages="$extra_packages $package" ;; \
+      esac; \
+    done; \
+    apt-get update; \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+      $base_packages $extra_packages
 
 # Install additional Python packages needed by your plugins or skills.
 # Example: docker build --build-arg OPENCLAW_IMAGE_PIP_PACKAGES="requests humanize" .
@@ -291,16 +322,87 @@ RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,shar
 # Adds ~300MB but eliminates the 60-90s Playwright install on every container start.
 # Must run after node_modules COPY so playwright-core is available.
 ARG OPENCLAW_INSTALL_BROWSER=""
-ENV PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright
+ENV OPENCLAW_PLAYWRIGHT_BROWSERS_PATH=/opt/openclaw/ms-playwright
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/openclaw/ms-playwright
 RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,id=openclaw-bookworm-apt-lists,target=/var/lib/apt,sharing=locked \
+    install -d -m 0755 -o node -g node "$OPENCLAW_PLAYWRIGHT_BROWSERS_PATH" && \
     if [ -n "$OPENCLAW_INSTALL_BROWSER" ]; then \
       apt-get update && \
       DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends xvfb && \
-      mkdir -p "$PLAYWRIGHT_BROWSERS_PATH" && \
       node /app/node_modules/playwright-core/cli.js install --with-deps chromium && \
-      chown -R node:node "$PLAYWRIGHT_BROWSERS_PATH"; \
+      chmod -R a+rX "$OPENCLAW_PLAYWRIGHT_BROWSERS_PATH" && \
+      chown -R node:node "$OPENCLAW_PLAYWRIGHT_BROWSERS_PATH"; \
     fi
+
+# Pin Go and gog so rebuilds do not depend on rate-limited release discovery.
+ARG GO_VERSION=1.26.5
+ARG GO_LINUX_AMD64_SHA256=5c2c3b16caefa1d968a94c1daca04a7ca301a496d9b086e17ad77bb81393f053
+ARG GO_LINUX_ARM64_SHA256=fe4789e92b1f33358680864bbe8704289e7bb5fc207d80623c308935bd696d49
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64) go_arch=amd64; go_sha256="$GO_LINUX_AMD64_SHA256" ;; \
+      arm64) go_arch=arm64; go_sha256="$GO_LINUX_ARM64_SHA256" ;; \
+      *) echo "Unsupported architecture: $arch" >&2; exit 1 ;; \
+    esac; \
+    go_version="go${GO_VERSION#go}"; \
+    curl -fsSL "https://go.dev/dl/${go_version}.linux-${go_arch}.tar.gz" -o /tmp/go.tgz; \
+    printf '%s  %s\n' "$go_sha256" /tmp/go.tgz | sha256sum -c -; \
+    rm -rf /usr/local/go; \
+    tar -C /usr/local -xzf /tmp/go.tgz; \
+    rm -f /tmp/go.tgz; \
+    /usr/local/go/bin/go version
+
+ARG GOGCLI_TAG=v0.34.1
+ARG GOGCLI_DEFAULT_TAG=v0.34.1
+ARG GOGCLI_LINUX_AMD64_SHA256=a5b4be2ea635d4c830972dec1f3a90b0ca17f9c25e7a6353d1e068d8505ea983
+ARG GOGCLI_LINUX_ARM64_SHA256=8510db6492c27f7704bf60af276f34ede81b67d88b6ffcf953153da841eaa3ed
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in \
+      amd64) gog_arch=amd64; gog_sha256="$GOGCLI_LINUX_AMD64_SHA256" ;; \
+      arm64) gog_arch=arm64; gog_sha256="$GOGCLI_LINUX_ARM64_SHA256" ;; \
+      *) echo "Unsupported architecture: $arch" >&2; exit 1 ;; \
+    esac; \
+    tag="$GOGCLI_TAG"; \
+    if [ "$tag" = latest ]; then \
+      tag="$(curl -fsSIL -o /dev/null -w '%{url_effective}' \
+        https://github.com/openclaw/gogcli/releases/latest | awk -F/ '{print $NF}')"; \
+      if [ -z "$tag" ]; then \
+        echo "WARN: gog release discovery failed; using $GOGCLI_DEFAULT_TAG" >&2; \
+        tag="$GOGCLI_DEFAULT_TAG"; \
+      fi; \
+    fi; \
+    version="${tag#v}"; \
+    asset="gogcli_${version}_linux_${gog_arch}.tar.gz"; \
+    if [ "$tag" != "$GOGCLI_DEFAULT_TAG" ] || [ -z "$gog_sha256" ]; then \
+      gog_sha256="$(curl -fsSL \
+        "https://github.com/openclaw/gogcli/releases/download/$tag/checksums.txt" | \
+        awk -v asset="$asset" '$2 == asset { print $1; exit }')"; \
+    fi; \
+    test -n "$gog_sha256"; \
+    curl -fsSL \
+      "https://github.com/openclaw/gogcli/releases/download/$tag/$asset" \
+      -o /tmp/gogcli.tgz; \
+    printf '%s  %s\n' "$gog_sha256" /tmp/gogcli.tgz | sha256sum -c -; \
+    tar -xzf /tmp/gogcli.tgz -C /tmp; \
+    install -m 0755 /tmp/gog /usr/local/bin/gog; \
+    rm -f /tmp/gog /tmp/gogcli.tgz; \
+    gog --help >/dev/null
+
+# Homebrew covers Linux tools without Debian packages. Keep Git metadata so
+# runtime installs and updates continue to work as the unprivileged user.
+ARG HOMEBREW_BREW_TAG=6.0.15
+ARG HOMEBREW_BREW_COMMIT=7b0f22a4ab77567edef114c8dfc423fb96e2fbaa
+RUN set -eux; \
+    gosu node git clone --depth 1 --branch "$HOMEBREW_BREW_TAG" \
+      https://github.com/Homebrew/brew.git "$HOMEBREW_REPOSITORY"; \
+    test "$(gosu node git -C "$HOMEBREW_REPOSITORY" rev-parse HEAD)" = \
+      "$HOMEBREW_BREW_COMMIT"; \
+    ln -sf ../Homebrew/bin/brew "$HOMEBREW_PREFIX/bin/brew"; \
+    chown -R node:node /home/linuxbrew; \
+    gosu node brew --version >/dev/null
 
 # Optionally install Docker CLI for sandbox container management.
 # Build with: docker build --build-arg OPENCLAW_INSTALL_DOCKER_CLI=1 ...
@@ -343,8 +445,13 @@ RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,shar
     fi
 
 # Expose the CLI binary without requiring npm global writes as non-root.
-RUN ln -sf /app/openclaw.mjs /usr/local/bin/openclaw \
- && chmod 755 /app/openclaw.mjs
+COPY --from=build --chown=node:node /app/scripts/docker/playwright-chromium.sh ./scripts/docker/playwright-chromium.sh
+COPY --from=build --chown=root:root /app/scripts/docker/node-login-path.sh /etc/profile.d/openclaw-node-path.sh
+RUN chmod 0755 /app/scripts/docker/playwright-chromium.sh && \
+    chmod 0644 /etc/profile.d/openclaw-node-path.sh && \
+    ln -sf /app/openclaw.mjs /usr/local/bin/openclaw && \
+    ln -sf /app/scripts/docker/playwright-chromium.sh /usr/local/bin/openclaw-playwright-chromium && \
+    chmod 0755 /app/openclaw.mjs
 
 # Pre-create default named-volume mount points so first-run Docker volumes copy
 # node ownership from the image instead of starting as root-owned directories.

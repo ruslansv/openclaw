@@ -594,8 +594,6 @@ write_extra_compose() {
 
   cat >"$EXTRA_COMPOSE_FILE" <<'YAML'
 services:
-  openclaw-gateway:
-    volumes:
 YAML
 
   if [[ -n "$home_volume" ]]; then
@@ -607,6 +605,21 @@ YAML
     validate_mount_spec "$gateway_config_mount"
     validate_mount_spec "$gateway_workspace_mount"
     validate_mount_spec "$gateway_auth_profile_secret_mount"
+    cat >>"$EXTRA_COMPOSE_FILE" <<'YAML'
+  openclaw-init:
+    volumes:
+YAML
+    printf '      - %s\n' "$(quote_yaml_string "$gateway_home_mount")" >>"$EXTRA_COMPOSE_FILE"
+    printf '      - %s\n' "$(quote_yaml_string "$gateway_config_mount")" >>"$EXTRA_COMPOSE_FILE"
+    printf '      - %s\n' "$(quote_yaml_string "$gateway_workspace_mount")" >>"$EXTRA_COMPOSE_FILE"
+  fi
+
+  cat >>"$EXTRA_COMPOSE_FILE" <<'YAML'
+  openclaw-gateway:
+    volumes:
+YAML
+
+  if [[ -n "$home_volume" ]]; then
     printf '      - %s\n' "$(quote_yaml_string "$gateway_home_mount")" >>"$EXTRA_COMPOSE_FILE"
     printf '      - %s\n' "$(quote_yaml_string "$gateway_config_mount")" >>"$EXTRA_COMPOSE_FILE"
     printf '      - %s\n' "$(quote_yaml_string "$gateway_workspace_mount")" >>"$EXTRA_COMPOSE_FILE"

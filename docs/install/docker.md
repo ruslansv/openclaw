@@ -165,6 +165,8 @@ Optional variables accepted by `scripts/docker/setup.sh` (and, for the gateway c
 | `OPENCLAW_INSTALL_BROWSER`                      | Bake Chromium + Xvfb into the image at build time                                                                 |
 | `OPENCLAW_EXTRA_MOUNTS`                         | Extra host bind mounts (comma-separated `source:target[:opts]`)                                                   |
 | `OPENCLAW_HOME_VOLUME`                          | Persist `/home/node` in a named Docker volume                                                                     |
+| `OPENCLAW_STATE_VOLUME`                         | External state volume name used by `docker-compose.persistence.yml`                                               |
+| `OPENCLAW_AGENTS_VOLUME`                        | External agent/session volume name used by `docker-compose.persistence.yml`                                       |
 | `OPENCLAW_TZ`                                   | Set the gateway and CLI container timezone to an IANA name (default `UTC`)                                        |
 | `OPENCLAW_SANDBOX`                              | Opt in to sandbox bootstrap (`1`, `true`, `yes`, `on`)                                                            |
 | `OPENCLAW_SKIP_ONBOARDING`                      | Skip the interactive onboarding step (`1`, `true`, `yes`, `on`)                                                   |
@@ -179,7 +181,14 @@ Optional variables accepted by `scripts/docker/setup.sh` (and, for the gateway c
 | `OTEL_SEMCONV_STABILITY_OPT_IN`                 | Opt in to latest experimental GenAI semantic attributes                                                           |
 | `OPENCLAW_OTEL_PRELOADED`                       | Skip starting a second OpenTelemetry SDK when one is preloaded                                                    |
 
-The official image ships no Homebrew. During onboarding, OpenClaw hides brew-only skill dependency installers in a Linux container without `brew`; provide those dependencies through a custom image or install manually. Use `OPENCLAW_IMAGE_APT_PACKAGES` for Debian-packaged dependencies and `OPENCLAW_IMAGE_PIP_PACKAGES` for Python dependencies (runs `python3 -m pip install --break-system-packages` at build time, so pin versions and use only indexes you trust).
+The official upstream image ships no Homebrew. Source builds from this fork pin
+Homebrew, Go, and `gog` for Docker-hosted workflows while keeping their install
+locations writable by the `node` runtime user. For other images, provide those
+dependencies through a custom image or install them manually. Use
+`OPENCLAW_IMAGE_APT_PACKAGES` for Debian-packaged dependencies and
+`OPENCLAW_IMAGE_PIP_PACKAGES` for Python dependencies (runs
+`python3 -m pip install --break-system-packages` at build time, so pin versions
+and use only indexes you trust).
 
 If Docker reports `ResourceExhausted`, `cannot allocate memory`, or aborts during `tsdown`, increase the Docker builder memory limit or retry with smaller explicit heaps:
 
@@ -404,9 +413,48 @@ The auth-profile secret directory stores the local encryption key for OAuth-back
 
 Installed downloadable plugins store package state under the mounted OpenClaw home, so install records and package roots survive container replacement; gateway startup does not regenerate bundled-plugin dependency trees.
 
+For high-churn SQLite and agent/session state, this fork also provides
+`docker-compose.persistence.yml`. Its volumes are external, so Compose does not
+delete them during `docker compose down -v`:
+
+```bash
+docker volume create openclaw_runtime_state_v1
+docker volume create openclaw_runtime_agents_v1
+export COMPOSE_FILE=docker-compose.yml:docker-compose.persistence.yml
+docker compose up -d openclaw-gateway
+```
+
+Set `OPENCLAW_STATE_VOLUME` or `OPENCLAW_AGENTS_VOLUME` before startup to use
+different existing volume names. Include the same overlay for every CLI,
+backup, build, and lifecycle command; otherwise a one-off container sees the
+stale directories hidden underneath those nested mounts.
+
+Before an upgrade, create and verify a container-aware backup. Running the
+backup command through Compose makes it see the active external volumes and
+the bind-mounted workspace:
+
+```bash
+mkdir -p backups/pre-upgrade
+docker compose run --rm -T \
+  -v "$PWD/backups/pre-upgrade:/backup" \
+  openclaw-cli backup create --output /backup --verify --json
+```
+
+Keep the previous image tag and backup together. SQLite schema upgrades can
+make an old image unable to open the new database, so rollback requires both
+the old image and the matching pre-upgrade state backup.
+
 For full VM persistence details, see [Docker VM Runtime - What persists where](/install/docker-vm-runtime#what-persists-where).
 
 **Disk growth hotspots:** `media/`, per-agent SQLite databases, legacy session JSONL transcripts, the shared SQLite state database, installed plugin package roots, and rolling file logs under `/tmp/openclaw/`.
+
+On a macOS Docker host that must stay awake for scheduled work, use the tracked
+helper instead of an ad hoc `caffeinate` process:
+
+```bash
+./scripts/openclaw-keepawake.sh on
+./scripts/openclaw-keepawake.sh status
+```
 
 ### Shell helpers (optional)
 
