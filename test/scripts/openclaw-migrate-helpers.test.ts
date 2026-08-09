@@ -124,10 +124,17 @@ describe("openclaw Docker migration helpers", () => {
       path.join(configDir, "extensions", "tracked-plugin", "package.json"),
       '{"name":"tracked-plugin"}\n',
     );
+    await mkdir(path.join(configDir, "plugin-skills"), { recursive: true });
+    await symlink(
+      "/app/dist/extensions/slack/skills/slack",
+      path.join(configDir, "plugin-skills", "slack"),
+    );
     await writeFixtureFile(path.join(configDir, "npm", "projects", "native.bin"), "source\n");
     await writeFixtureFile(path.join(configDir, "git", "tracked-plugin", "native.bin"), "source\n");
     await writeFixtureFile(path.join(configDir, "workspace", "stale-from-config.txt"), "stale\n");
     await writeFixtureFile(path.join(workspaceDir, "scripts", "digest.js"), "console.log('ok');\n");
+    await mkdir(path.join(workspaceDir, ".venv", "bin"), { recursive: true });
+    await symlink("/usr/bin/python3", path.join(workspaceDir, ".venv", "bin", "python3"));
     await writeFixtureFile(
       path.join(workspaceDir, ".openclaw", "extensions", "local-plugin", "package.json"),
       '{"name":"local-plugin"}\n',
@@ -197,6 +204,10 @@ esac
     expect(existsSync(`${archivePath}.sha256`)).toBe(true);
     expect(statSync(archivePath).mode & 0o077).toBe(0);
     expect(statSync(`${archivePath}.sha256`).mode & 0o077).toBe(0);
+    const archiveList = spawnSync("tar", ["-tzf", archivePath], { encoding: "utf8" });
+    expect(archiveList.status).toBe(0);
+    expect(archiveList.stdout).not.toContain("plugin-skills");
+    expect(archiveList.stdout).not.toContain("payload/workspace/.venv/bin/python3");
 
     const maliciousStage = path.join(root, "malicious-archive-stage");
     const maliciousArchive = path.join(backupDir, "malicious.tar.gz");

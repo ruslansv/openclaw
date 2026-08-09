@@ -245,7 +245,9 @@ if [[ $STOP_FIRST -eq 1 ]]; then
 fi
 
 echo "==> Copying config directory"
-config_rsync_args=(-a)
+# OpenClaw fully owns and regenerates this directory at startup. Its links point
+# into the current installation, so archiving them would make backups nonportable.
+config_rsync_args=(-a --exclude="/plugin-skills/")
 if [[ "$WORKSPACE_DIR" == "$CONFIG_DIR"/* ]]; then
   nested_workspace_rel="${WORKSPACE_DIR#$CONFIG_DIR/}"
   if [[ -n "$nested_workspace_rel" ]]; then
@@ -255,7 +257,9 @@ fi
 rsync "${config_rsync_args[@]}" "$CONFIG_DIR/" "$stage/payload/config/"
 
 echo "==> Copying workspace directory"
-rsync -a "$WORKSPACE_DIR/" "$stage/payload/workspace/"
+# Virtual environments commonly use absolute interpreter links. They are not
+# portable restore data, so omit escaping links while retaining workspace files.
+rsync -a --safe-links "$WORKSPACE_DIR/" "$stage/payload/workspace/"
 
 if [[ -d "$AUTH_PROFILE_SECRET_DIR" ]]; then
   echo "==> Copying auth-profile secret directory"
