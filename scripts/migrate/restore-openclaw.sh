@@ -291,7 +291,8 @@ with tarfile.open(archive_path, "r:gz") as archive:
 PY
 
 echo "==> Extracting archive"
-tar -xzf "$ARCHIVE_PATH" -C "$extract_dir"
+# Ignore macOS metadata when restoring onto Linux or a different Mac.
+COPYFILE_DISABLE=1 tar -xzf "$ARCHIVE_PATH" -C "$extract_dir"
 
 if [[ -z "$CONFIG_DIR" ]]; then
   CONFIG_DIR="${OPENCLAW_CONFIG_DIR:-$(env_value_from_file "$ENV_FILE" OPENCLAW_CONFIG_DIR)}"
@@ -402,17 +403,19 @@ restore_cleanup() {
       echo "ERROR: Active data was rolled back, but openclaw-gateway could not be restarted." >&2
       status=1
     else
-      for gateway_container_id in "${paused_gateway_container_ids[@]}"; do
-        if ! gateway_state="$(docker inspect --format '{{.State.Status}}' "$gateway_container_id")"; then
-          echo "ERROR: Restored gateway state could not be inspected." >&2
-          status=1
-          continue
-        fi
-        if [[ "$gateway_state" != "paused" ]] && ! docker pause "$gateway_container_id" >/dev/null; then
-          echo "ERROR: openclaw-gateway could not be returned to its paused state." >&2
-          status=1
-        fi
-      done
+      if [[ ${#paused_gateway_container_ids[@]} -gt 0 ]]; then
+        for gateway_container_id in "${paused_gateway_container_ids[@]}"; do
+          if ! gateway_state="$(docker inspect --format '{{.State.Status}}' "$gateway_container_id")"; then
+            echo "ERROR: Restored gateway state could not be inspected." >&2
+            status=1
+            continue
+          fi
+          if [[ "$gateway_state" != "paused" ]] && ! docker pause "$gateway_container_id" >/dev/null; then
+            echo "ERROR: openclaw-gateway could not be returned to its paused state." >&2
+            status=1
+          fi
+        done
+      fi
     fi
   fi
   if [[ $status -ne 0 && $plugin_payload_created -eq 1 ]]; then
@@ -611,9 +614,11 @@ if [[ $STOP_FIRST -eq 1 ]]; then
   done <<<"$gateway_container_ids"
   if [[ $gateway_is_active -eq 1 ]]; then
     gateway_restore_on_failure=1
-    for gateway_container_id in "${paused_gateway_container_ids[@]}"; do
-      docker unpause "$gateway_container_id" >/dev/null || fail "Failed to unpause openclaw-gateway before restore."
-    done
+    if [[ ${#paused_gateway_container_ids[@]} -gt 0 ]]; then
+      for gateway_container_id in "${paused_gateway_container_ids[@]}"; do
+        docker unpause "$gateway_container_id" >/dev/null || fail "Failed to unpause openclaw-gateway before restore."
+      done
+    fi
     echo "==> Stopping gateway container"
     if ! docker compose -f "$compose_file" stop openclaw-gateway >/dev/null 2>&1; then
       fail "Failed to stop openclaw-gateway. Fix Docker/Compose first or rerun with --no-stop if the gateway is already stopped."

@@ -205,9 +205,12 @@ esac
     await writeFile(symlinkVictim, "unchanged\n");
     expect(spawnSync("tar", ["-xzf", archivePath, "-C", maliciousStage]).status).toBe(0);
     await symlink(symlinkVictim, path.join(maliciousStage, "env.pre-restore"));
-    expect(spawnSync("tar", ["-czf", maliciousArchive, "."], { cwd: maliciousStage }).status).toBe(
-      0,
-    );
+    expect(
+      spawnSync("tar", ["-czf", maliciousArchive, "."], {
+        cwd: maliciousStage,
+        env: { ...process.env, COPYFILE_DISABLE: "1" },
+      }).status,
+    ).toBe(0);
     const maliciousDigest = spawnSync("shasum", ["-a", "256", maliciousArchive], {
       encoding: "utf8",
     });
