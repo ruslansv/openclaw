@@ -197,12 +197,35 @@ function pruneNodeModulesForOmittedPlugins(repoRoot, bundledPluginDir, omittedPl
   return removed;
 }
 
+function linkUnifiedPluginDependency(repoRoot, pluginDir, packageName) {
+  const packageDir = resolveNodeModulePackageDir(pluginDir, packageName);
+  if (!packageDir) {
+    return false;
+  }
+
+  const rootPackageDir = nodeModulePath(repoRoot, packageName);
+  if (fs.existsSync(rootPackageDir)) {
+    // Unified chunks already resolved this package through the root install during
+    // compilation. Preserve that owner; replacing it could break core or another plugin.
+    return true;
+  }
+
+  fs.mkdirSync(path.dirname(rootPackageDir), { recursive: true });
+  fs.symlinkSync(
+    process.platform === "win32"
+      ? packageDir
+      : path.relative(path.dirname(rootPackageDir), packageDir),
+    rootPackageDir,
+    "junction",
+  );
+  return true;
+}
+
 // Docker compiles selected externally distributed plugins into the unified dist
-// graph, but their dependencies stay plugin-local under the isolated pnpm install
-// instead of the root node_modules that dist/extensions/<id> can reach. Link them
-// under the packaged root, as isolated source checkouts do, and fail closed when a
-// declared dependency still does not resolve from there: the plugin would otherwise
-// ship loadable-looking but be rejected by dependency diagnostics at runtime.
+// graph, while their dependencies stay plugin-local under the isolated pnpm install.
+// Link dependencies at both importer roots: plugin-local chunks resolve below
+// dist/extensions/<id>, while shared chunks emitted directly below dist resolve from
+// root node_modules. Fail closed if either compiled path would be unloadable.
 function linkRetainedPluginDependencies(repoRoot, bundledPluginDir, retainedPluginIds) {
   const unreachable = [];
   for (const pluginId of [...retainedPluginIds].toSorted((left, right) =>
@@ -218,9 +241,10 @@ function linkRetainedPluginDependencies(repoRoot, bundledPluginDir, retainedPlug
     linkSourcePluginDependencies(pluginDir, distNodeModules);
     const packageJson = readPackageJson(path.join(pluginDir, "package.json"));
     for (const packageName of Object.keys(packageJson?.dependencies ?? {})) {
+      const unifiedReachable = linkUnifiedPluginDependency(repoRoot, pluginDir, packageName);
       if (
         !(packageName in (packageJson.optionalDependencies ?? {})) &&
-        !resolveNodeModulePackageDir(distPluginDir, packageName)
+        (!resolveNodeModulePackageDir(distPluginDir, packageName) || !unifiedReachable)
       ) {
         unreachable.push(`${pluginId}: ${packageName}`);
       }

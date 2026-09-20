@@ -22,4 +22,36 @@ describe("pruneDockerPluginDist", () => {
     expect(fs.readlinkSync(distLink)).toBe(targetDir);
     expect(fs.readFileSync(pluginFile, "utf8")).toBe("export {};\n");
   });
+
+  it("links Docker-selected plugin dependencies for unified and plugin-local chunks", () => {
+    const rootDir = createTempDir("openclaw-prune-docker-selected-");
+    const packageName = "@vendor/runtime";
+    const pluginDir = path.join(rootDir, "extensions", "slack");
+    const sourcePackage = path.join(pluginDir, "node_modules", "@vendor", "runtime");
+    const distPlugin = path.join(rootDir, "dist", "extensions", "slack");
+    fs.mkdirSync(sourcePackage, { recursive: true });
+    fs.mkdirSync(distPlugin, { recursive: true });
+    fs.mkdirSync(path.join(rootDir, "dist-runtime"), { recursive: true });
+    fs.writeFileSync(
+      path.join(rootDir, "package.json"),
+      JSON.stringify({ files: ["!dist/extensions/slack/**"] }),
+    );
+    fs.writeFileSync(
+      path.join(pluginDir, "package.json"),
+      JSON.stringify({ name: "@openclaw/slack", dependencies: { [packageName]: "1.0.0" } }),
+    );
+    fs.writeFileSync(
+      path.join(sourcePackage, "package.json"),
+      JSON.stringify({ name: packageName, version: "1.0.0" }),
+    );
+    fs.writeFileSync(path.join(distPlugin, "index.js"), `import ${JSON.stringify(packageName)};\n`);
+
+    pruneDockerPluginDist({
+      cwd: rootDir,
+      env: { OPENCLAW_EXTENSIONS: "slack" },
+    });
+
+    expect(fs.realpathSync(path.join(rootDir, "node_modules", packageName))).toBe(sourcePackage);
+    expect(fs.realpathSync(path.join(distPlugin, "node_modules", packageName))).toBe(sourcePackage);
+  });
 });
