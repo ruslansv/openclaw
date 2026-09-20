@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { vi } from "vitest";
 import type { Mock } from "vitest";
+import type { ModelCatalogEntry } from "../agents/model-catalog.types.js";
 import type { ReplyPayload } from "../auto-reply/reply-payload.js";
 import type { InternalGetReplyOptions } from "../auto-reply/reply/get-reply.types.js";
 import type { MsgContext } from "../auto-reply/templating.js";
@@ -24,7 +25,10 @@ export type GetReplyFromConfigFn = (
   configOverride?: OpenClawConfig,
 ) => Promise<ReplyPayload | ReplyPayload[] | undefined>;
 type CronIsolatedRunFn = (...args: unknown[]) => Promise<RunCronAgentTurnResult>;
-type AgentCommandFn = (...args: unknown[]) => Promise<void>;
+type AgentCommandResult = Awaited<
+  ReturnType<(typeof import("../agents/agent-command.js"))["agentCommand"]>
+>;
+type AgentCommandFn = (...args: unknown[]) => Promise<AgentCommandResult | void>;
 type SendWhatsAppFn = (...args: unknown[]) => Promise<{ messageId: string; toJid: string }>;
 export type RunBtwSideQuestionFn = (...args: unknown[]) => Promise<unknown>;
 type DispatchInboundMessageFn = (...args: unknown[]) => Promise<unknown>;
@@ -37,14 +41,7 @@ type GatewayTestHoistedState = {
   agentDiscoveryMock: {
     enabled: boolean;
     discoverCalls: number;
-    models: Array<{
-      id: string;
-      name?: string;
-      provider: string;
-      contextWindow?: number;
-      reasoning?: boolean;
-      input?: string[];
-    }>;
+    models: Array<Omit<ModelCatalogEntry, "name"> & { name?: string }>;
   };
   cronIsolatedRun: Mock<CronIsolatedRunFn>;
   agentCommand: Mock<AgentCommandFn>;
@@ -61,7 +58,13 @@ type GatewayTestHoistedState = {
     resolveEndBeforeTimeoutIds: Set<string>;
     compactEmbeddedAgentSession: Mock<CompactEmbeddedAgentSessionFn>;
   };
-  testTailscaleWhois: { value: TailscaleWhoisIdentity | null };
+  testTailscaleWhois: {
+    value: TailscaleWhoisIdentity | null;
+    calls: Array<{
+      ip: string;
+      opts?: { timeoutMs?: number; cacheTtlMs?: number; errorTtlMs?: number };
+    }>;
+  };
   getReplyFromConfig: Mock<GetReplyFromConfigFn>;
   sendWhatsAppMock: Mock<SendWhatsAppFn>;
   testState: {
@@ -74,6 +77,7 @@ type GatewayTestHoistedState = {
     allowFrom: string[] | undefined;
     cronStorePath: string | undefined;
     cronEnabled: boolean | undefined;
+    cronTriggersEnabled: boolean | undefined;
     gatewayBind: "auto" | "lan" | "tailnet" | "loopback" | undefined;
     gatewayAuth: Record<string, unknown> | undefined;
     gatewayControlUi: Record<string, unknown> | undefined;
@@ -122,7 +126,7 @@ const gatewayTestHoisted = vi.hoisted(() => {
         },
       }),
     },
-    testTailscaleWhois: { value: null },
+    testTailscaleWhois: { value: null, calls: [] },
     getReplyFromConfig: vi.fn<GetReplyFromConfigFn>().mockResolvedValue(undefined),
     sendWhatsAppMock: vi.fn().mockResolvedValue({ messageId: "msg-1", toJid: "jid-1" }),
     testState: {
@@ -135,6 +139,7 @@ const gatewayTestHoisted = vi.hoisted(() => {
       allowFrom: undefined,
       cronStorePath: undefined,
       cronEnabled: false,
+      cronTriggersEnabled: undefined,
       gatewayBind: undefined,
       gatewayAuth: undefined,
       gatewayControlUi: undefined,
@@ -158,11 +163,11 @@ export const testTailnetIPv4 = gatewayTestHoisted.testTailnetIPv4;
 export const testTailscaleWhois = gatewayTestHoisted.testTailscaleWhois;
 export const agentDiscoveryMock = gatewayTestHoisted.agentDiscoveryMock;
 export const cronIsolatedRun = gatewayTestHoisted.cronIsolatedRun;
-export const agentCommand = gatewayTestHoisted.agentCommand;
+export const agentCommandMock = gatewayTestHoisted.agentCommand;
 export const dispatchInboundMessageMock = gatewayTestHoisted.dispatchInboundMessage;
-export const getReplyFromConfig = gatewayTestHoisted.getReplyFromConfig;
+export const gatewayReplyMock = gatewayTestHoisted.getReplyFromConfig;
 export const mockGetReplyFromConfigOnce = (impl: GetReplyFromConfigFn) => {
-  getReplyFromConfig.mockImplementationOnce(impl);
+  gatewayReplyMock.mockImplementationOnce(impl);
 };
 export const sendWhatsAppMock = gatewayTestHoisted.sendWhatsAppMock;
 export const testState = gatewayTestHoisted.testState;

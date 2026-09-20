@@ -2,6 +2,8 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { createRealtimeTranscriptionWebSocketSession } from "openclaw/plugin-sdk/realtime-transcription-session";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type WebSocket from "ws";
 import { WebSocketServer } from "ws";
@@ -14,7 +16,9 @@ vi.mock("./config-api.js", () => ({
   resolveElevenLabsApiKeyWithProfileFallback: resolveElevenLabsApiKeyWithProfileFallbackMock,
 }));
 
-import { buildElevenLabsRealtimeTranscriptionProvider } from "./realtime-transcription-provider.js";
+import { buildElevenLabsRealtimeTranscriptionProvider } from "./realtime-transcription-provider-factory.js";
+
+const realtimeHost = { createRealtimeTranscriptionWebSocketSession };
 
 let cleanup: (() => Promise<void>) | undefined;
 
@@ -23,12 +27,14 @@ async function createRealtimeServer(
   options?: {
     initialEvent?: Record<string, unknown>;
     events?: readonly Record<string, unknown>[];
+    eventsByConnection?: readonly (readonly Record<string, unknown>[])[];
     closeAfterEvents?: boolean;
   },
 ) {
   const server = createServer();
   const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
   const clients = new Set<WebSocket>();
+  let connectionCount = 0;
   server.on("upgrade", (request, socket, head) => {
     onRequest(new URL(request.url ?? "/", "http://127.0.0.1"));
     wss.handleUpgrade(request, socket, head, (ws) => {
@@ -37,7 +43,9 @@ async function createRealtimeServer(
         clients.delete(ws);
       });
       ws.send(JSON.stringify(options?.initialEvent ?? { message_type: "session_started" }));
-      for (const event of options?.events ?? []) {
+      const events = options?.eventsByConnection?.[connectionCount] ?? options?.events ?? [];
+      connectionCount += 1;
+      for (const event of events) {
         ws.send(JSON.stringify(event));
       }
       if (options?.closeAfterEvents) {
@@ -75,7 +83,7 @@ describe("buildElevenLabsRealtimeTranscriptionProvider", () => {
   });
 
   it("normalizes nested provider config", () => {
-    const provider = buildElevenLabsRealtimeTranscriptionProvider();
+    const provider = buildElevenLabsRealtimeTranscriptionProvider(realtimeHost);
     const resolved = provider.resolveConfig?.({
       cfg: {} as OpenClawConfig,
       rawConfig: {
@@ -108,7 +116,7 @@ describe("buildElevenLabsRealtimeTranscriptionProvider", () => {
   });
 
   it("drops malformed numeric realtime config values", () => {
-    const provider = buildElevenLabsRealtimeTranscriptionProvider();
+    const provider = buildElevenLabsRealtimeTranscriptionProvider(realtimeHost);
     const resolved = provider.resolveConfig?.({
       cfg: {} as OpenClawConfig,
       rawConfig: {
@@ -134,7 +142,7 @@ describe("buildElevenLabsRealtimeTranscriptionProvider", () => {
   });
 
   it("keeps realtime VAD numeric config inside provider ranges", () => {
-    const provider = buildElevenLabsRealtimeTranscriptionProvider();
+    const provider = buildElevenLabsRealtimeTranscriptionProvider(realtimeHost);
     const resolved = provider.resolveConfig?.({
       cfg: {} as OpenClawConfig,
       rawConfig: {
@@ -162,7 +170,7 @@ describe("buildElevenLabsRealtimeTranscriptionProvider", () => {
   it("connects through the public session boundary with the configured URL params", async () => {
     const requests: URL[] = [];
     const baseUrl = await createRealtimeServer((url) => requests.push(url));
-    const session = buildElevenLabsRealtimeTranscriptionProvider().createSession({
+    const session = buildElevenLabsRealtimeTranscriptionProvider(realtimeHost).createSession({
       providerConfig: {
         apiKey: "fixture-value",
         baseUrl,
@@ -194,17 +202,20 @@ describe("buildElevenLabsRealtimeTranscriptionProvider", () => {
     const baseUrl = await createRealtimeServer(() => undefined, {
       events: [{ message_type: messageType, error: message }],
     });
-    const onError = vi.fn();
-    const session = buildElevenLabsRealtimeTranscriptionProvider().createSession({
+    const errorReceived = createDeferred<Error>();
+    const onError = vi.fn(errorReceived.resolve);
+    const session = buildElevenLabsRealtimeTranscriptionProvider(realtimeHost).createSession({
       providerConfig: { apiKey: "fixture-value", baseUrl },
       onError,
     });
 
-    await session.connect();
-    await vi.waitFor(() => {
+    try {
+      await session.connect();
+      await vi.waitFor(() => errorReceived.promise);
       expect(onError).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ message }));
-    });
-    session.close();
+    } finally {
+      session.close();
+    }
   });
 
   it("rejects pre-ready provider errors with their original actionable detail", async () => {
@@ -214,7 +225,7 @@ describe("buildElevenLabsRealtimeTranscriptionProvider", () => {
       closeAfterEvents: true,
     });
     const onError = vi.fn();
-    const session = buildElevenLabsRealtimeTranscriptionProvider().createSession({
+    const session = buildElevenLabsRealtimeTranscriptionProvider(realtimeHost).createSession({
       providerConfig: { apiKey: "fixture-value", baseUrl },
       onError,
     });
@@ -228,17 +239,20 @@ describe("buildElevenLabsRealtimeTranscriptionProvider", () => {
     const baseUrl = await createRealtimeServer(() => undefined, {
       events: [{ message_type: "input_error", message }],
     });
-    const onError = vi.fn();
-    const session = buildElevenLabsRealtimeTranscriptionProvider().createSession({
+    const errorReceived = createDeferred<Error>();
+    const onError = vi.fn(errorReceived.resolve);
+    const session = buildElevenLabsRealtimeTranscriptionProvider(realtimeHost).createSession({
       providerConfig: { apiKey: "fixture-value", baseUrl },
       onError,
     });
 
-    await session.connect();
-    await vi.waitFor(() => {
+    try {
+      await session.connect();
+      await vi.waitFor(() => errorReceived.promise);
       expect(onError).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ message }));
-    });
-    session.close();
+    } finally {
+      session.close();
+    }
   });
 
   it("keeps ordinary partial and committed transcripts outside error dispatch", async () => {
@@ -250,28 +264,191 @@ describe("buildElevenLabsRealtimeTranscriptionProvider", () => {
     });
     const onError = vi.fn();
     const onPartial = vi.fn();
-    const onTranscript = vi.fn();
-    const session = buildElevenLabsRealtimeTranscriptionProvider().createSession({
+    const transcriptReceived = createDeferred<string>();
+    const onTranscript = vi.fn(transcriptReceived.resolve);
+    const session = buildElevenLabsRealtimeTranscriptionProvider(realtimeHost).createSession({
       providerConfig: { apiKey: "fixture-value", baseUrl },
       onError,
       onPartial,
       onTranscript,
     });
 
-    await session.connect();
-    await vi.waitFor(() => {
+    try {
+      await session.connect();
+      await vi.waitFor(() => transcriptReceived.promise);
       expect(onPartial).toHaveBeenCalledExactlyOnceWith("hello");
       expect(onTranscript).toHaveBeenCalledExactlyOnceWith("hello there");
+      expect(onError).not.toHaveBeenCalled();
+    } finally {
+      session.close();
+    }
+  });
+
+  it.each([
+    {
+      name: "delivers identical committed words from separate speech turns",
+      events: [
+        { message_type: "partial_transcript", text: "yes" },
+        { message_type: "committed_transcript", text: "yes" },
+        { message_type: "partial_transcript", text: "yes" },
+        { message_type: "committed_transcript", text: "yes" },
+      ],
+      transcripts: ["yes", "yes"],
+    },
+    {
+      name: "treats adjacent identical committed transcripts as separate segments",
+      events: [
+        { message_type: "committed_transcript", text: "yes" },
+        { message_type: "committed_transcript", text: "yes" },
+      ],
+      transcripts: ["yes", "yes"],
+    },
+    {
+      name: "suppresses a matching timestamp companion for the same committed segment",
+      events: [
+        { message_type: "committed_transcript", text: "yes" },
+        { message_type: "committed_transcript_with_timestamps", text: "yes" },
+      ],
+      transcripts: ["yes"],
+    },
+    {
+      name: "consumes the timestamp companion at most once",
+      events: [
+        { message_type: "committed_transcript", text: "yes" },
+        { message_type: "committed_transcript_with_timestamps", text: "yes" },
+        { message_type: "committed_transcript_with_timestamps", text: "yes" },
+      ],
+      transcripts: ["yes", "yes"],
+    },
+    {
+      name: "preserves identical consecutive timestamp-only segments",
+      events: [
+        { message_type: "committed_transcript_with_timestamps", text: "yes" },
+        { message_type: "committed_transcript_with_timestamps", text: "yes" },
+      ],
+      transcripts: ["yes", "yes"],
+    },
+    {
+      name: "emits a timestamp-only segment without an earlier plain commit",
+      events: [{ message_type: "committed_transcript_with_timestamps", text: "yes" }],
+      transcripts: ["yes"],
+    },
+    {
+      name: "does not suppress a timestamp transcript that differs from its commit",
+      events: [
+        { message_type: "committed_transcript", text: "yes" },
+        { message_type: "committed_transcript_with_timestamps", text: "no" },
+      ],
+      transcripts: ["yes", "no"],
+    },
+    {
+      name: "preserves a delayed timestamp companion across an interleaved partial",
+      events: [
+        { message_type: "committed_transcript", text: "yes" },
+        { message_type: "partial_transcript", text: "next turn" },
+        { message_type: "committed_transcript_with_timestamps", text: "yes" },
+        { message_type: "committed_transcript", text: "yes" },
+        { message_type: "committed_transcript_with_timestamps", text: "yes" },
+      ],
+      transcripts: ["yes", "yes"],
+    },
+    {
+      name: "keeps timestamp companions attached to alternating committed segments",
+      events: [
+        { message_type: "committed_transcript", text: "yes" },
+        { message_type: "committed_transcript_with_timestamps", text: "yes" },
+        { message_type: "committed_transcript", text: "no" },
+        { message_type: "committed_transcript_with_timestamps", text: "no" },
+        { message_type: "committed_transcript", text: "yes" },
+        { message_type: "committed_transcript_with_timestamps", text: "yes" },
+      ],
+      transcripts: ["yes", "no", "yes"],
+    },
+  ])("$name", async ({ events, transcripts }) => {
+    const deliveryMarker = "transcript frames delivered";
+    const baseUrl = await createRealtimeServer(() => undefined, {
+      events: [...events, { message_type: "partial_transcript", text: deliveryMarker }],
     });
-    expect(onError).not.toHaveBeenCalled();
-    session.close();
+    const onError = vi.fn();
+    const framesDelivered = createDeferred<void>();
+    const onPartial = vi.fn((text: string) => {
+      if (text === deliveryMarker) {
+        framesDelivered.resolve();
+      }
+    });
+    const onSpeechStart = vi.fn();
+    const onTranscript = vi.fn();
+    const session = buildElevenLabsRealtimeTranscriptionProvider(realtimeHost).createSession({
+      providerConfig: { apiKey: "fixture-value", baseUrl },
+      onError,
+      onPartial,
+      onSpeechStart,
+      onTranscript,
+    });
+
+    try {
+      await session.connect();
+      await vi.waitFor(() => framesDelivered.promise);
+      expect(onPartial).toHaveBeenCalledWith(deliveryMarker);
+      expect(onTranscript.mock.calls.map(([text]) => text)).toEqual(transcripts);
+      expect(onError).not.toHaveBeenCalled();
+      expect(onSpeechStart).not.toHaveBeenCalled();
+    } finally {
+      session.close();
+    }
+  });
+
+  it("does not suppress a timestamp-only transcript from a replacement session", async () => {
+    const firstMarker = "first session delivered";
+    const secondMarker = "replacement session delivered";
+    const baseUrl = await createRealtimeServer(() => undefined, {
+      eventsByConnection: [
+        [
+          { message_type: "committed_transcript", text: "yes" },
+          { message_type: "partial_transcript", text: firstMarker },
+        ],
+        [
+          { message_type: "committed_transcript_with_timestamps", text: "yes" },
+          { message_type: "partial_transcript", text: secondMarker },
+        ],
+      ],
+    });
+    const firstSessionDelivered = createDeferred<void>();
+    const replacementSessionDelivered = createDeferred<void>();
+    const onPartial = vi.fn((text: string) => {
+      if (text === firstMarker) {
+        firstSessionDelivered.resolve();
+      } else if (text === secondMarker) {
+        replacementSessionDelivered.resolve();
+      }
+    });
+    const onTranscript = vi.fn();
+    const session = buildElevenLabsRealtimeTranscriptionProvider(realtimeHost).createSession({
+      providerConfig: { apiKey: "fixture-value", baseUrl },
+      onPartial,
+      onTranscript,
+    });
+
+    try {
+      await session.connect();
+      await vi.waitFor(() => firstSessionDelivered.promise);
+      expect(onPartial).toHaveBeenCalledWith(firstMarker);
+      expect(onTranscript).toHaveBeenCalledExactlyOnceWith("yes");
+
+      await session.connect();
+      await vi.waitFor(() => replacementSessionDelivered.promise);
+      expect(onPartial).toHaveBeenCalledWith(secondMarker);
+      expect(onTranscript.mock.calls).toEqual([["yes"], ["yes"]]);
+    } finally {
+      session.close();
+    }
   });
 
   it("rejects whitespace-only environment keys before session creation", () => {
     resolveElevenLabsApiKeyWithProfileFallbackMock.mockReturnValue(null);
     vi.stubEnv("ELEVENLABS_API_KEY", "");
     vi.stubEnv("XI_API_KEY", "   ");
-    const provider = buildElevenLabsRealtimeTranscriptionProvider();
+    const provider = buildElevenLabsRealtimeTranscriptionProvider(realtimeHost);
 
     expect(provider.isConfigured({ cfg: {} as OpenClawConfig, providerConfig: {} })).toBe(false);
     expect(() => provider.createSession({ providerConfig: {} })).toThrow(

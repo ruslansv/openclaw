@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import JSZip from "jszip";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { sha256Hex } from "../../infra/crypto-digest.js";
 import { withExtractedArchiveRoot } from "../../infra/install-flow.js";
 import {
   initializeGlobalHookRunner,
@@ -14,6 +15,8 @@ import {
   CLAWHUB_SKILL_ARCHIVE_ROOT_MARKERS,
   installExtractedSkillRoot,
 } from "./archive-install.js";
+import { resolveWorkspaceSkillInstallDir } from "./install-paths.js";
+import { digestClawHubSkillTree } from "./skill-tree-digest.js";
 
 const tempDirs = createTrackedTempDirs();
 
@@ -248,6 +251,53 @@ describe("skill archive install", () => {
     const payload = handler.mock.calls[0]?.[0] as { request?: { mode?: string } } | undefined;
     expect(payload?.request?.mode).toBe("install");
   });
+
+  it.each(["unchanged", "absent", "appeared", "force"] as const)(
+    "preserves native replacement behavior when the installed skill is %s",
+    async (state) => {
+      const root = await tempDirs.make("openclaw-skill-update-state-");
+      const workspaceDir = path.join(root, "workspace");
+      const extractedRoot = path.join(root, "extracted");
+      await fs.mkdir(extractedRoot, { recursive: true });
+      await fs.writeFile(path.join(extractedRoot, "SKILL.md"), "replacement");
+      const targetDir = resolveWorkspaceSkillInstallDir(workspaceDir, "weather");
+      if (state !== "absent") {
+        await fs.mkdir(targetDir, { recursive: true });
+        await fs.writeFile(path.join(targetDir, "SKILL.md"), "original");
+      }
+      const expectedClawHubState =
+        state === "unchanged"
+          ? {
+              slug: "weather",
+              skillFilePath: "SKILL.md",
+              skillFileSha256: sha256Hex("original"),
+              fileTreeSha256: await digestClawHubSkillTree(targetDir),
+            }
+          : state === "force"
+            ? undefined
+            : null;
+      const result = await installExtractedSkillRoot({
+        workspaceDir,
+        slug: "weather",
+        extractedRoot,
+        mode: "update",
+        expectedClawHubState,
+      });
+      if (state === "appeared") {
+        expect(result).toMatchObject({
+          ok: false,
+          failureKind: "invalid-request",
+          replacementBlocked:
+            'Skill "weather" appeared during update. Updating replaces the installed skill directory.',
+        });
+      } else {
+        expect(result).toEqual({ ok: true, targetDir });
+      }
+      expect(await fs.readFile(path.join(targetDir, "SKILL.md"), "utf8")).toBe(
+        state === "appeared" ? "original" : "replacement",
+      );
+    },
+  );
 
   it.each([
     {

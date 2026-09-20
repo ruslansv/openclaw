@@ -1,5 +1,5 @@
 {
-  "startupJsGzipBytes": 324587,
-  "reason": "multi-gateway footer subtitle plus accumulated main drift (PR #114059), then the Memory settings surface: its i18n strings plus the rendering-free memory-schema facts settings search reads at startup",
-  "updatedAt": "2026-07-26"
+  "startupJsGzipBytes": 364912,
+  "reason": "PR153238 landing continuation approved the bounded 512 B cap increase for cold clipboard image custody; measured Node24 gzip baseline, preserving current main route-label changes. The 512 B growth and 64 B build-variance allowances are unchanged.",
+  "updatedAt": "2026-09-20"
 }

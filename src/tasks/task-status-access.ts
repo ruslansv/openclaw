@@ -4,17 +4,15 @@ import {
   getLatestGeneratedMediaTaskAdmissionIdForSessionKey,
   listActiveGeneratedMediaTaskIdsForSessionKey,
 } from "./generated-media-task-activity.js";
-import { isTerminalTaskStatus } from "./task-executor-policy.js";
 // Filters task status visibility by requester, owner, and flow scope.
 import {
   findTaskByRunId,
-  getTaskById,
   listTaskRecords,
   listTaskRecordsUnsorted,
   listTasksForAgentId,
-  listTasksForSessionKey,
+  listTasksForRelatedSessionKey,
 } from "./task-registry.js";
-import type { TaskRecord } from "./task-registry.types.js";
+import { isTerminalTaskStatus, type TaskRecord } from "./task-registry.types.js";
 
 const GENERATED_MEDIA_TASK_KINDS = new Set([
   "image_generation",
@@ -22,30 +20,15 @@ const GENERATED_MEDIA_TASK_KINDS = new Set([
   "video_generation",
 ]);
 
-/** Returns only the session lookup fields needed by task status commands. */
-export function getTaskSessionLookupByIdForStatus(
-  taskId: string,
-):
-  | Pick<TaskRecord, "requesterSessionKey" | "ownerKey" | "runId" | "agentId" | "requesterAgentId">
-  | undefined {
-  const task = getTaskById(taskId);
-  return task
-    ? {
-        requesterSessionKey: task.requesterSessionKey,
-        ownerKey: task.ownerKey,
-        ...(task.runId ? { runId: task.runId } : {}),
-        ...(task.agentId ? { agentId: task.agentId } : {}),
-        ...(task.requesterAgentId ? { requesterAgentId: task.requesterAgentId } : {}),
-      }
-    : undefined;
-}
-
-export function listTasksForSessionKeyForStatus(sessionKey: string): TaskRecord[] {
-  return listTasksForSessionKey(sessionKey);
+export function listTasksForSessionKeyForStatus(
+  sessionKey: string,
+  sessionAgentId?: string,
+): TaskRecord[] {
+  return listTasksForRelatedSessionKey(sessionKey, sessionAgentId);
 }
 
 export function listTasksForOwnerOrRequesterSessionKeyForStatus(sessionKey: string): TaskRecord[] {
-  return listTaskRecords().filter(
+  return listTaskRecords(
     (task) => task.requesterSessionKey === sessionKey || task.ownerKey === sessionKey,
   );
 }
