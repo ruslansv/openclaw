@@ -1,4 +1,4 @@
-import { appendAttachmentUrlSearchParam } from "./chat-message-local-media.ts";
+import { sleepWithAbort } from "@openclaw/retry";
 
 export type ChatMediaPlaybackMode = "native" | "transcode";
 
@@ -17,7 +17,18 @@ function playbackAbortError(signal: AbortSignal): Error {
 }
 
 export function appendChatMediaPlaybackParam(source: string): string {
-  return appendAttachmentUrlSearchParam(source, "playback", "1");
+  const trimmed = source.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+  const hashIndex = trimmed.indexOf("#");
+  const hash = hashIndex === -1 ? "" : trimmed.slice(hashIndex);
+  const withoutHash = hashIndex === -1 ? trimmed : trimmed.slice(0, hashIndex);
+  const queryIndex = withoutHash.indexOf("?");
+  const path = queryIndex === -1 ? withoutHash : withoutHash.slice(0, queryIndex);
+  const params = new URLSearchParams(queryIndex === -1 ? "" : withoutHash.slice(queryIndex + 1));
+  params.set("playback", "1");
+  return `${path}?${params.toString()}${hash}`;
 }
 
 export function buildChatMediaFetchHeaders(authToken: string | null | undefined): Headers {
@@ -27,23 +38,6 @@ export function buildChatMediaFetchHeaders(authToken: string | null | undefined)
     headers.set("Authorization", `Bearer ${token}`);
   }
   return headers;
-}
-
-function waitForRetry(delayMs: number, signal: AbortSignal): Promise<void> {
-  if (signal.aborted) {
-    return Promise.reject(playbackAbortError(signal));
-  }
-  return new Promise((resolve, reject) => {
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(playbackAbortError(signal));
-    };
-    const timer = setTimeout(() => {
-      signal.removeEventListener("abort", onAbort);
-      resolve();
-    }, delayMs);
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
 }
 
 async function fetchPlaybackHead(params: {
@@ -122,7 +116,7 @@ export async function waitForChatMediaPlayback(params: {
       if (remainingAfterResponseMs <= 0) {
         return "unavailable";
       }
-      await waitForRetry(Math.min(retryDelay, remainingAfterResponseMs), params.signal);
+      await sleepWithAbort(Math.min(retryDelay, remainingAfterResponseMs), params.signal);
     } catch {
       return params.signal.aborted ? "aborted" : "unavailable";
     }

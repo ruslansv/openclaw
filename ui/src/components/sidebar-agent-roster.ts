@@ -11,12 +11,15 @@ import { shouldHandleNavigationClick } from "../lib/navigation-click.ts";
 import { areUiSessionKeysEquivalent } from "../lib/sessions/session-key.ts";
 import { newSessionSearch } from "../pages/new-session/location.ts";
 import type { AppSidebarRenderHost } from "./app-sidebar-render.ts";
+import { renderPersonalSessionEmpty } from "./app-sidebar-session-filter-summary.ts";
 import { renderSessionListFrame, renderSessionSection } from "./app-sidebar-session-list-render.ts";
 import type { SidebarVisibleSections } from "./app-sidebar-session-projection.ts";
 import {
   renderChildSessionLoadError,
+  renderSessionTree,
   type SessionListHost,
 } from "./app-sidebar-session-row-render.ts";
+import type { SidebarRecentSession } from "./app-sidebar-session-types.ts";
 import { icons } from "./icons.ts";
 import { renderAgentIdentityAvatar } from "./identity-avatar-view.ts";
 import { renderNewSessionLink } from "./new-session-link.ts";
@@ -24,13 +27,14 @@ import { renderTeamSessionSlots } from "./session-attention-presentation.ts";
 import "../styles/sidebar-agent-roster.css";
 
 registerAgentsHomeEnglish();
-type RosterHost = AppSidebarRenderHost &
-  SessionListHost & { loadMoreSidebarSessions(): Promise<void> };
+type RosterHost = AppSidebarRenderHost & SessionListHost;
 
 class SidebarAgentRoster extends AgentRosterElement {
-  @property({ attribute: false }) host!: RosterHost;
+  // Selection, menus, drag state, and presence belong to the mutable host, not the row projection.
+  @property({ attribute: false, hasChanged: () => true }) host!: RosterHost;
   @property({ attribute: false }) sections: SidebarVisibleSections["sections"] = [];
   @property({ attribute: false }) involvingMe = false;
+  @property({ attribute: false }) empty = false;
   @state() private collapsed = new Set<string>();
   private settingsScope: string | null = null;
   private published: {
@@ -249,6 +253,16 @@ class SidebarAgentRoster extends AgentRosterElement {
               </section>`;
             },
           )}
+          ${renderPersonalSessionEmpty(
+            this.host,
+            this.empty,
+            this.connected &&
+              this.roster.result !== null &&
+              !this.roster.loading &&
+              !error &&
+              !this.roster.result.hasMore &&
+              !this.host.sessionData.sessionMutationError,
+          )}
         </div>`,
       );
     });
@@ -259,7 +273,6 @@ customElements.define("openclaw-sidebar-agent-roster", SidebarAgentRoster);
 
 class SidebarNewSessionMenu extends AgentRosterElement {
   @property({ attribute: false }) host!: RosterHost;
-  @property({ attribute: false }) triggerClass = "";
 
   override render() {
     return this.avatars.withActiveRoutes(() => {
@@ -290,7 +303,7 @@ class SidebarNewSessionMenu extends AgentRosterElement {
         <button
           slot="trigger"
           type="button"
-          class=${this.triggerClass}
+          class="sidebar-brand__icon sidebar-brand__header-control sidebar-brand__new-thread"
           aria-label=${t("agentChip.newConversation")}
           title=${access.allowed ? t("agentChip.newConversation") : access.reason}
           ?disabled=${!access.allowed || cards.length === 0}
@@ -324,22 +337,38 @@ class SidebarNewSessionMenu extends AgentRosterElement {
 
 customElements.define("openclaw-sidebar-new-session-menu", SidebarNewSessionMenu);
 
-export function renderSidebarNewSessionMenu(host: RosterHost, triggerClass: string) {
+export function renderSidebarNewSessionMenu(host: RosterHost) {
   return html`<openclaw-sidebar-new-session-menu
     .host=${host}
     .active=${host.navigationVisible}
-    .triggerClass=${triggerClass}
   ></openclaw-sidebar-new-session-menu>`;
+}
+
+export function renderSidebarPinnedSession(host: RosterHost, session: SidebarRecentSession) {
+  const agentId = host.sessionNavigationAgentId(session);
+  const card = host.sessionDataContext
+    ? rosterActivityStore(host.sessionDataContext).snapshot.cards.find(
+        (agent) => agent.id === agentId,
+      )
+    : undefined;
+  return renderSessionTree({
+    host,
+    session,
+    listItem: false,
+    icon: renderAgentIdentityAvatar(card ?? { id: agentId }),
+  });
 }
 
 export function renderSidebarAgentRoster(
   host: RosterHost,
   sections: SidebarVisibleSections["sections"],
+  empty: boolean,
 ) {
   return html`<openclaw-sidebar-agent-roster
     .host=${host}
     .active=${host.navigationVisible}
     .sections=${sections}
+    .empty=${empty}
     .involvingMe=${host.sessionInvolvingMeFilterActive}
   ></openclaw-sidebar-agent-roster>`;
 }

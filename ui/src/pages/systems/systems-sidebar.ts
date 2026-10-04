@@ -5,6 +5,7 @@ import { icons } from "../../components/icons.ts";
 import { syncDropdownItemRadio } from "../../components/web-awesome.ts";
 import { t } from "../../i18n/index.ts";
 import { registerSystemsEnglish } from "../../i18n/locales/en-systems.ts";
+import { prettifyPlatform } from "../../lib/platform-label.ts";
 import { OpenClawLightDomElement } from "../../lit/openclaw-element.ts";
 import { SubscriptionsController } from "../../lit/subscriptions-controller.ts";
 import type {
@@ -90,15 +91,17 @@ export function systemStatus(row: SystemsInventoryRow): string {
   );
 }
 
+export function systemPlatform(row: SystemsInventoryRow): string | undefined {
+  const platform = row.gatewaySystemInfo?.osLabel ?? row.environment.platform ?? row.node?.platform;
+  return platform ? prettifyPlatform(platform, row.node?.deviceFamily) : undefined;
+}
+
 class SystemsSidebar extends OpenClawLightDomElement {
   @property({ attribute: false }) controller?: SystemsController;
 
   constructor() {
     super();
-    new SubscriptionsController(this).watch(
-      () => this.controller,
-      (controller, notify) => controller.subscribe(notify),
-    );
+    new SubscriptionsController(this).watchStore(() => this.controller);
   }
 
   override render() {
@@ -118,6 +121,7 @@ class SystemsSidebar extends OpenClawLightDomElement {
           [
             systemName(row),
             row.environment.id,
+            systemPlatform(row) ?? "",
             row.environment.platform ?? row.node?.platform ?? "",
           ].some((value) => value.toLocaleLowerCase().includes(query))
         );
@@ -141,7 +145,7 @@ class SystemsSidebar extends OpenClawLightDomElement {
       });
     const renderRow = (row: SystemsInventoryRow) => {
       const online = row.environment.status === "available";
-      const platform = row.environment.platform ?? row.node?.platform;
+      const platform = systemPlatform(row);
       const status = systemStatus(row);
       return html`<button
         class="systems-machine"
@@ -215,7 +219,7 @@ class SystemsSidebar extends OpenClawLightDomElement {
           aria-label=${t("systems.refresh")}
           title=${t("systems.refresh")}
           ?disabled=${controller.loading || !controller.connected}
-          @click=${() => void controller.refresh()}
+          @click=${() => void controller.refresh("manual")}
         >
           ${icons.refresh}
         </button>

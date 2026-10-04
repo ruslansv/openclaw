@@ -1,12 +1,16 @@
 import type { AgentMessage, SessionTreeEntry } from "@openclaw/agent-core";
-import { isCompactionReplayCheckpoint } from "@openclaw/ai/transports";
-import { sql } from "kysely";
+import { sql, type AliasableExpression } from "kysely";
 import {
   iterateSessionContextEntries,
   iterateSessionContextMessages,
   projectSessionEntryMessage,
 } from "../../../packages/agent-core/src/harness/session/session.js";
-import { classifyToolUseResultPairing } from "../../../packages/agent-core/src/harness/session/tool-result-pairing.js";
+import {
+  classifyToolUseResultPairing,
+  isSyntheticMissingToolResult,
+  SYNTHETIC_MISSING_TOOL_RESULT_DETAIL_KEY,
+} from "../../../packages/agent-core/src/harness/session/tool-result-pairing.js";
+import { isCompactionReplayCheckpoint } from "../../../packages/ai/src/transports/provider-compaction-checkpoint.js";
 import {
   executeSqliteQueryTakeFirstSync,
   iterateSqliteQuerySync,
@@ -16,7 +20,9 @@ import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction
 import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
+import { chunkItems } from "../../utils/chunk-items.js";
 import type {
+  SessionTranscriptContextVersion,
   SessionTranscriptReadScope,
   TranscriptEvent,
 } from "./session-accessor.sqlite-contract.js";
@@ -26,15 +32,13 @@ import {
   toDatabaseOptions,
 } from "./session-accessor.sqlite-scope.js";
 import { readActiveTranscriptEntryAnchorInTransaction } from "./session-accessor.sqlite-transcript-anchor.js";
-import {
-  readTranscriptContextVersionInTransaction,
-  type SessionTranscriptContextVersion,
-} from "./session-accessor.sqlite-transcript-state.js";
+import { readTranscriptContextVersionInTransaction } from "./session-accessor.sqlite-transcript-state.js";
 import { normalizeSessionContextEntryBoundaries } from "./session-entry-navigation.js";
-import {
-  projectModelContextEventSql,
-  projectModelContextNavigationSql,
-} from "./session-model-context-projection.js";
+import type {
+  SessionModelContextLimits,
+  SessionTranscriptModelContext,
+} from "./session-history-read.types.js";
+import { projectModelContextEventSql } from "./session-model-context-projection.js";
 import {
   resolveSqliteSessionTranscriptReadFence,
   runWithSessionTranscriptReadFence,
@@ -42,19 +46,18 @@ import {
 } from "./session-transcript-read-fence.js";
 import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
 import {
+  transcriptEventJsonSql,
+  transcriptEventModelBytesSql,
+  transcriptEventModelNavigationSql,
+  transcriptEventNavigationSql,
+} from "./transcript-payload.js";
+import {
   scanSessionTranscriptTree,
   selectSessionTranscriptTreePathNodes,
 } from "./transcript-tree.js";
 
-export type { SessionTranscriptContextVersion } from "./session-accessor.sqlite-transcript-state.js";
-
 type ContextEntry = SessionTreeEntry & { seq: number };
-export type SessionModelContextLimits = {
-  maxBytes: number;
-  maxEvents: number;
-  /** Detached model views may omit result bodies; evidence and fork readers remain strict. */
-  toolResultOverflow?: "omit";
-};
+export type { SessionModelContextLimits } from "./session-history-read.types.js";
 type ModelContextRequest = {
   entry: ContextEntry;
   omitCheckpoint: boolean;
@@ -157,6 +160,42 @@ export function validateSessionTranscriptContextAdmission(
     throw new SessionTranscriptReadFenceError(
       "Current-turn transcript admission is no longer readable",
     );
+  }
+}
+
+/** Validate detached context using the final reader's transaction-local facts. */
+export function validateSessionTranscriptContextInDatabase(
+  database: Pick<OpenClawAgentDatabase, "db" | "path">,
+  resolved: ReturnType<typeof resolveSqliteTranscriptReadScope>,
+  validation: {
+    version?: SessionTranscriptContextVersion;
+    admission?: UserTurnTranscriptAdmissionReceipt;
+    through?: TranscriptEntryAnchor;
+  },
+): void {
+  const { version, admission, through } = validation;
+  if (admission) {
+    if (
+      !runWithSessionTranscriptReadFence(admission, () =>
+        resolveSqliteSessionTranscriptReadFence({ database, ...resolved }),
+      )
+    ) {
+      throw new SessionTranscriptReadFenceError(
+        "Current-turn transcript admission is no longer readable",
+      );
+    }
+  } else if (!through) {
+    const current = readTranscriptContextVersionInTransaction(database, resolved.sessionId);
+    if (
+      current?.generation !== version?.generation ||
+      current?.rawSeq !== version?.rawSeq ||
+      current?.updatedAt !== version?.updatedAt
+    ) {
+      throw new SessionTranscriptReadFenceError("Session transcript changed during context read");
+    }
+  }
+  if (through) {
+    assertContextAnchor(database, resolved, through);
   }
 }
 
@@ -276,7 +315,7 @@ function selectBoundedModelRequests(
   }
   if (selected.length === 0) {
     throw new RangeError(
-      "Newest session context cannot fit the model-context limit without splitting a tool frame",
+      "The latest messages exceed this session's context limit. Start a new session with a brief summary to continue.",
     );
   }
   const selectedMessages = selected.flatMap(({ entry }) =>
@@ -299,18 +338,23 @@ function selectBoundedModelRequests(
   return boundary ? [boundary, ...selected] : selected;
 }
 
-function modelToolResultOmissionSql(requests: readonly ModelContextRequest[]) {
-  const omissions = requests.flatMap(({ entry, toolResultOmission }) =>
-    toolResultOmission ? [{ seq: entry.seq, text: toolResultOmission }] : [],
+function modelContextBatchSql(requests: readonly ModelContextRequest[]) {
+  const bySeq = new Map(requests.map(({ entry }) => [entry.seq, entry]));
+  const omitted = requests.flatMap(({ entry, omitCheckpoint }) =>
+    omitCheckpoint ? [entry.seq] : [],
   );
-  return omissions.length
+  const omitCheckpoint = omitted.length
+    ? /* kysely-allow-raw: checkpoint omission is scoped to bound row identities in this payload batch. */ sql<number>`seq IN (${sql.join(omitted)})`
+    : sql.lit(0);
+  const omissions = requests.flatMap(({ entry, toolResultOmission }) =>
+    toolResultOmission ? [sql`WHEN ${entry.seq} THEN ${toolResultOmission}`] : [],
+  );
+  const omission = omissions.length
     ? /* kysely-allow-raw: owned row identities and omission notices are bound values, not SQL text. */ sql<
         string | null
-      >`CASE seq ${sql.join(
-        omissions.map(({ seq, text }) => sql`WHEN ${seq} THEN ${text}`),
-        sql` `,
-      )} ELSE NULL END`
+      >`CASE seq ${sql.join(omissions, sql` `)} ELSE NULL END`
     : undefined;
+  return { bySeq, omitCheckpoint, omission };
 }
 
 /** Read a transient context without opening the writer lifecycle or copying native evidence. */
@@ -318,10 +362,7 @@ export function readSessionTranscriptModelContext(
   scope: SessionTranscriptReadScope,
   through?: TranscriptEntryAnchor,
   limits?: SessionModelContextLimits,
-): {
-  events: TranscriptEvent[];
-  version?: SessionTranscriptContextVersion;
-} {
+): SessionTranscriptModelContext {
   if (
     limits &&
     (!Number.isSafeInteger(limits.maxBytes) ||
@@ -442,12 +483,16 @@ function withTranscriptContextSnapshot<T>(
   through?: TranscriptEntryAnchor,
 ): { found: true; value: T } | { found: false } {
   const resolved = resolveSqliteTranscriptReadScope(scope);
-  const result = withOpenClawAgentDatabaseReadOnly(
+  return withOpenClawAgentDatabaseReadOnly(
     (database) =>
       runSqliteDeferredTransactionSync(
         database.db,
         () => {
           const db = getSessionKysely(database.db);
+          const role = db.fn("json_extract", [
+            transcriptEventNavigationSql(),
+            sql.val("$.message.role"),
+          ]);
           const fence = resolveSqliteSessionTranscriptReadFence({ database, ...resolved });
           const version = readTranscriptContextVersionInTransaction(database, resolved.sessionId);
           if (through) {
@@ -461,10 +506,10 @@ function withTranscriptContextSnapshot<T>(
           const header = executeSqliteQueryTakeFirstSync(
             database.db,
             base
-              .select("event_json")
+              .select(transcriptEventJsonSql(database.db).as("event_json"))
               .where(
                 /* kysely-allow-raw: the header discriminator is owned by the transcript codec. */
-                sql<string>`json_extract(event_json, '$.type')`,
+                sql<string>`json_extract(${transcriptEventNavigationSql()}, '$.type')`,
                 "=",
                 "session",
               )
@@ -476,10 +521,7 @@ function withTranscriptContextSnapshot<T>(
               for (const row of iterateSqliteQuerySync(
                 database.db,
                 base
-                  .select((eb) => [
-                    "seq",
-                    projectModelContextNavigationSql(eb.ref("event_json")).as("navigation_json"),
-                  ])
+                  .select(["seq", transcriptEventModelNavigationSql().as("navigation_json")])
                   .orderBy("seq", "asc"),
               )) {
                 // Only navigation crosses into JavaScript before the canonical context is selected.
@@ -506,7 +548,7 @@ function withTranscriptContextSnapshot<T>(
           const readPayload = prepareSqliteQuerySync<ContextEntry, { event_json: string }>(
             database.db,
             (parameter) =>
-              base.select("event_json").where(
+              base.select(transcriptEventJsonSql(database.db).as("event_json")).where(
                 "seq",
                 "=",
                 parameter((row) => row.seq),
@@ -522,26 +564,30 @@ function withTranscriptContextSnapshot<T>(
             },
             readModelEntrySizes: (requests) => {
               const sizes = new Map<ContextEntry, number>();
-              for (
-                let offset = 0;
-                offset < requests.length;
-                offset += MODEL_CONTEXT_PAYLOAD_BATCH_SIZE
-              ) {
-                const batch = requests.slice(offset, offset + MODEL_CONTEXT_PAYLOAD_BATCH_SIZE);
-                const bySeq = new Map(batch.map(({ entry }) => [entry.seq, entry]));
-                const omitted = batch
-                  .filter(({ omitCheckpoint }) => omitCheckpoint)
-                  .map(({ entry }) => entry.seq);
+              for (const batch of chunkItems(requests, MODEL_CONTEXT_PAYLOAD_BATCH_SIZE)) {
+                const { bySeq, omitCheckpoint, omission } = modelContextBatchSql(batch);
                 const query = base
                   .select((eb) => {
-                    const projected = projectModelContextEventSql(
-                      eb.ref("event_json"),
-                      omitted.length
-                        ? eb.case().when("seq", "in", omitted).then(1).else(0).end()
-                        : eb.val(0),
-                      modelToolResultOmissionSql(batch),
-                    );
-                    return ["seq", eb.fn<number>("octet_length", [projected]).as("bytes")];
+                    const storedBytes = transcriptEventModelBytesSql(omitCheckpoint);
+                    // Stored costs describe the original model view, not a transient omission notice.
+                    const bytes: AliasableExpression<number> = omission
+                      ? eb
+                          .case()
+                          .when(omission, "is not", null)
+                          .then(
+                            eb.fn<number>("octet_length", [
+                              projectModelContextEventSql(
+                                transcriptEventJsonSql(database.db),
+                                omitCheckpoint,
+                                omission,
+                                role,
+                              ),
+                            ]),
+                          )
+                          .else(storedBytes)
+                          .end()
+                      : storedBytes;
+                    return ["seq", bytes.as("bytes")];
                   })
                   .where("seq", "in", [...bySeq.keys()]);
                 for (const row of iterateSqliteQuerySync(database.db, query)) {
@@ -552,33 +598,35 @@ function withTranscriptContextSnapshot<T>(
             },
             readModelEntries: (requests) => {
               const payloads = new Map<ContextEntry, SessionTreeEntry>();
-              for (
-                let offset = 0;
-                offset < requests.length;
-                offset += MODEL_CONTEXT_PAYLOAD_BATCH_SIZE
-              ) {
-                const batch = requests.slice(offset, offset + MODEL_CONTEXT_PAYLOAD_BATCH_SIZE);
-                const bySeq = new Map(batch.map(({ entry }) => [entry.seq, entry]));
-                const omitted = batch
-                  .filter(({ omitCheckpoint }) => omitCheckpoint)
-                  .map(({ entry }) => entry.seq);
+              for (const batch of chunkItems(requests, MODEL_CONTEXT_PAYLOAD_BATCH_SIZE)) {
+                const { bySeq, omitCheckpoint, omission } = modelContextBatchSql(batch);
                 // Bound both IN lists while keeping payload selection inside the navigation snapshot.
                 // SQL removes obsolete replay/private fields before they enter JavaScript.
                 const query = base
-                  .select((eb) => [
+                  .select([
                     "seq",
                     projectModelContextEventSql(
-                      eb.ref("event_json"),
-                      omitted.length > 0
-                        ? eb.case().when("seq", "in", omitted).then(1).else(0).end()
-                        : eb.val(0),
-                      modelToolResultOmissionSql(batch),
+                      transcriptEventJsonSql(database.db),
+                      omitCheckpoint,
+                      omission,
+                      role,
                     ).as("event_json"),
                   ])
                   .where("seq", "in", [...bySeq.keys()]);
                 for (const row of iterateSqliteQuerySync(database.db, query)) {
                   const entry = bySeq.get(row.seq)!;
-                  payloads.set(entry, hydrateContextEntry(row.event_json, entry));
+                  const hydrated = hydrateContextEntry(row.event_json, entry);
+                  if (
+                    entry.type === "message" &&
+                    entry.message.role === "toolResult" &&
+                    isSyntheticMissingToolResult(entry.message) &&
+                    hydrated.type === "message" &&
+                    hydrated.message.role === "toolResult"
+                  ) {
+                    // Retain pairing provenance after SQL removes opaque tool details.
+                    hydrated.message.details = { [SYNTHETIC_MISSING_TOOL_RESULT_DETAIL_KEY]: true };
+                  }
+                  payloads.set(entry, hydrated);
                 }
               }
               return payloads;
@@ -589,7 +637,6 @@ function withTranscriptContextSnapshot<T>(
       ),
     toDatabaseOptions(resolved),
   );
-  return result;
 }
 
 function hydrateContextEntry(eventJson: string, entry: ContextEntry): SessionTreeEntry {

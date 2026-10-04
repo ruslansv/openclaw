@@ -2,7 +2,7 @@ use crate::gateway_ws::{
     AgentsListResult, ChatHistoryPage, ChatSendResult, GatewayClient, GatewayGeneration,
 };
 use crate::quickchat_widgets::QuickChatWidgetState;
-use crate::{tray, DesktopState};
+use crate::DesktopState;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -21,6 +21,8 @@ use uuid::Uuid;
 pub const QUICKCHAT_LABEL: &str = "quickchat";
 // Alt+Space is GNOME's window-menu grab; a second X11 grab for it always fails.
 pub const QUICKCHAT_SHORTCUT: &str = "CmdOrCtrl+Shift+Space";
+// The focused dashboard owns this chord; a global Quick Chat binding would steal it.
+const NEW_SESSION_SHORTCUT: &str = "CmdOrCtrl+Shift+O";
 const QUICKCHAT_SHORTCUT_FILE: &str = "quickchat-shortcut";
 const QUICKCHAT_SHORTCUT_DISABLED_MARKER: &str = "quickchat-shortcut-disabled";
 pub(crate) const QUICKCHAT_WIDTH: f64 = 640.0;
@@ -789,11 +791,11 @@ fn parse_shortcut(accelerator: &str) -> Result<Shortcut, String> {
 
 fn validate_quickchat_shortcut(accelerator: &str) -> Result<Shortcut, String> {
     let shortcut = parse_shortcut(accelerator)?;
-    let dashboard_shortcut = parse_shortcut(tray::GLOBAL_SHORTCUT)
-        .expect("the built-in dashboard shortcut must be valid");
-    if shortcut == dashboard_shortcut {
+    let new_session_shortcut = parse_shortcut(NEW_SESSION_SHORTCUT)
+        .expect("the built-in New Session shortcut must be valid");
+    if shortcut == new_session_shortcut {
         return Err(format!(
-            "Shortcut \"{accelerator}\" is reserved for Open Dashboard."
+            "Shortcut \"{accelerator}\" is reserved for New Session in the focused dashboard."
         ));
     }
     Ok(shortcut)
@@ -891,19 +893,7 @@ pub(crate) fn persist_quickchat_shortcut_state(app: &AppHandle, registered: bool
     let Some(marker) = quickchat_shortcut_disabled_marker(app) else {
         return;
     };
-    let result = if registered {
-        match fs::remove_file(&marker) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error),
-        }
-    } else {
-        marker
-            .parent()
-            .map(fs::create_dir_all)
-            .transpose()
-            .and_then(|_| fs::write(&marker, b""))
-    };
+    let result = persist_shortcut_preference(&marker, (!registered).then_some(""));
     if let Err(error) = result {
         eprintln!("Could not persist Quick Chat shortcut preference: {error}");
     }
@@ -1126,7 +1116,7 @@ pub fn quickchat_set_shortcut(
         return state.shortcut_status();
     }
 
-    let configured = accelerator.and_then(|value| non_empty(Some(value)));
+    let configured = non_empty(accelerator);
     let candidate_accelerator = configured
         .clone()
         .unwrap_or_else(|| QUICKCHAT_SHORTCUT.to_string());
@@ -2324,11 +2314,11 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_shortcut_preference_falls_back_to_default() {
+    fn new_session_shortcut_preference_falls_back_to_default() {
         let directory = test_directory("shortcut-reserved");
         fs::create_dir_all(&directory).expect("create test directory");
         let path = directory.join(QUICKCHAT_SHORTCUT_FILE);
-        fs::write(&path, tray::GLOBAL_SHORTCUT).expect("write reserved shortcut");
+        fs::write(&path, "CmdOrCtrl+Shift+O").expect("write reserved shortcut");
 
         let loaded = shortcut_preference_from_path(&path);
         assert_eq!(loaded.accelerator, QUICKCHAT_SHORTCUT);

@@ -37,11 +37,6 @@ export function composerFixture(
   document.body.append(container);
   const client = new GatewayBrowserClient({ url: "ws://gateway.test" });
   const request = vi.spyOn(client, "request").mockResolvedValue(people);
-  const eventListeners = new Set<Parameters<GatewayBrowserClient["addEventListener"]>[0]>();
-  vi.spyOn(client, "addEventListener").mockImplementation((listener) => {
-    eventListeners.add(listener);
-    return () => eventListeners.delete(listener);
-  });
   const controller = new NewSessionComposerTextareaController();
   controllers.push(controller);
   let draft = initial;
@@ -110,7 +105,13 @@ export function composerFixture(
   const textarea = container.querySelector<HTMLTextAreaElement>("textarea")!;
   const edit = (
     next: string,
-    options: { start?: number; end?: number; inputType?: string; data?: string | null } = {},
+    options: {
+      start?: number;
+      end?: number;
+      caret?: number;
+      inputType?: string;
+      data?: string | null;
+    } = {},
   ) => {
     const inputType = options.inputType ?? "insertText";
     textarea.setSelectionRange(
@@ -121,7 +122,7 @@ export function composerFixture(
       new InputEvent("beforeinput", { bubbles: true, inputType, data: options.data ?? next }),
     );
     textarea.value = next;
-    textarea.setSelectionRange(next.length, next.length);
+    textarea.setSelectionRange(options.caret ?? next.length, options.caret ?? next.length);
     textarea.dispatchEvent(
       new InputEvent("input", { bubbles: true, inputType, data: options.data ?? next }),
     );
@@ -142,11 +143,6 @@ export function composerFixture(
     abort,
     slashCommand,
     value: () => ({ draft, mentions }),
-    emitEvent: (event: "presence" | "sessions.changed") => {
-      for (const listener of eventListeners) {
-        listener({ type: "event", event, payload: { sessionKey: "agent:main:unrelated" } });
-      }
-    },
     replaceOwner: () => {
       ownerKey = "sender-two";
       renderCurrent();

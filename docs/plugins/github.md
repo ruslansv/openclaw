@@ -94,15 +94,21 @@ hovercard, and GitHub links open externally.
 
 - The reader is public-only and read-only. Use **Open on GitHub** for private
   repositories, posting comments, or merging pull requests.
-- Detail requests do not use ambient GitHub credentials. Preview metadata preserves
-  the selected agent’s managed GitHub identity or the existing service/environment
-  fallback when no managed identity is selected. Identity changes abort stale requests.
+- Previews and reader documents use the selected agent’s managed GitHub identity,
+  or the configured Control UI GitHub token and Gateway environment fallback when
+  no managed identity is selected. Without credentials they use GitHub’s shared
+  anonymous IP quota. Authenticated documents remain public-only: the reader checks
+  repository visibility and identity before returning fresh or cached content.
+  Identity changes abort stale requests. Attachment images remain anonymous.
 - Each comment collection is limited to 20 entries; PR discussion and inline
   review comments have separate limits. Up to 30 changed files are shown.
 - PR checks use at most one page each of check runs and commit statuses and show
   up to 100 results. Incomplete or unavailable checks retain a link to GitHub.
 - Long text and patches are bounded. Incomplete content is labeled rather than
   presented as a complete conversation or diff.
+- Uncached hover previews share a two-second upstream request budget. Slow avatars
+  or co-author lookups are omitted; slow required metadata returns a retryable
+  unavailable error. The full reader keeps its longer request timeout.
 - **Refresh** requests the current item again. Rate limits, deleted items, and
   unavailable services show their specific explanation in the reader and hovercards,
   including GitHub's retry delay when available. Cached preview details stay visible

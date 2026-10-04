@@ -7,8 +7,13 @@ import {
 } from "../../infra/kysely-sync.js";
 import { coerceRequiredSqliteNumber as sqliteNumber } from "../../infra/sqlite-number.js";
 import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
+import type { DatabaseFileIdentity } from "../../infra/sqlite-worker-identity.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
-import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
+import { assertOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
+import {
+  withOpenClawAgentDatabaseReadOnly,
+  type OpenClawAgentReadOnlyDatabase,
+} from "../../state/openclaw-agent-db-readonly.js";
 import {
   getOpenClawAgentDatabaseIfOpen,
   type OpenClawAgentDatabase,
@@ -18,16 +23,20 @@ import type { SessionStateDeletePlan } from "./session-accessor.sqlite-archive-t
 import type { SqliteSessionArtifactPreparationDiagnostics } from "./session-accessor.sqlite-contract.js";
 import { readSessionEntryStore } from "./session-accessor.sqlite-entry-store.js";
 import {
-  collectProjectedReferencedSessionIds,
   planSessionStateDeleteIfUnreferenced,
+  readReferencedSessionIds,
 } from "./session-accessor.sqlite-lifecycle-state.js";
-import type { LifecycleArtifactCleanupPlan } from "./session-accessor.sqlite-lifecycle-types.js";
+import type {
+  LifecycleArtifactCleanupInput,
+  LifecycleArtifactCleanupPlan,
+} from "./session-accessor.sqlite-lifecycle-types.js";
 import { collectSessionStateIdsForEntry } from "./session-accessor.sqlite-references.js";
+import { getSessionKysely, withSqliteSessionDatabase } from "./session-accessor.sqlite-scope.js";
 import {
-  cloneSessionEntry,
-  getSessionKysely,
-  withSqliteSessionDatabase,
-} from "./session-accessor.sqlite-scope.js";
+  assertCanonicalSqliteSessionKeysCurrent,
+  readWithCanonicalSessionReaderContinuation,
+} from "./session-canonical-key.js";
+import { transcriptEventJsonSql } from "./transcript-payload.js";
 
 function sessionKeySegmentStartsWith(sessionKey: string, prefix: string): boolean {
   const firstSeparator = sessionKey.indexOf(":");
@@ -102,7 +111,7 @@ function sqliteTranscriptStateHasMarker(params: {
       params.database.db,
       db
         .selectFrom("transcript_events")
-        .select("event_json")
+        .select(transcriptEventJsonSql(params.database.db).as("event_json"))
         .where("session_id", "=", params.sessionId)
         .orderBy("seq", "asc"),
     );
@@ -129,7 +138,7 @@ function planSqliteOrphanLifecycleTranscriptStateDeletes(params: {
   agentId?: string;
   archiveRemovedEntryTranscripts: boolean;
   archiveDirectory: string;
-  database: OpenClawAgentDatabase;
+  database: OpenClawAgentReadOnlyDatabase;
   excludedSessionIds?: ReadonlySet<string>;
   pluginOwnerId?: string;
   referencedSessionIds: ReadonlySet<string>;
@@ -193,10 +202,11 @@ function planSqliteOrphanLifecycleTranscriptStateDeletes(params: {
   return deletePlans;
 }
 
-/** A negative selection avoids writable admission; the planner still owns every deletion decision. */
+/** A negative selection skips planning; the planner still owns every deletion decision. */
 function hasSessionLifecycleArtifactCleanupCandidates(
   database: Pick<OpenClawAgentDatabase, "db">,
   params: Parameters<typeof planSessionLifecycleArtifactCleanup>[1],
+  inspectOrphanTranscripts: boolean,
 ): boolean {
   const db = getSessionKysely(database.db);
   for (const row of iterateSqliteQuerySync(
@@ -225,6 +235,10 @@ function hasSessionLifecycleArtifactCleanupCandidates(
     ) {
       continue;
     }
+    if (!inspectOrphanTranscripts) {
+      // Warm orphan scans retain the planner's native reads, errors, and diagnostics.
+      return true;
+    }
     if (
       sqliteTranscriptStateIsReclaimable({
         database,
@@ -249,12 +263,13 @@ export async function prepareSessionLifecycleArtifactCleanup(
   databaseOptions: OpenClawAgentDatabaseOptions,
   params: Parameters<typeof planSessionLifecycleArtifactCleanup>[1],
 ): Promise<LifecycleArtifactCleanupPlan> {
-  if (!getOpenClawAgentDatabaseIfOpen(databaseOptions)) {
+  const cachedDatabase = getOpenClawAgentDatabaseIfOpen(databaseOptions);
+  if (!cachedDatabase) {
     try {
       const candidates = withOpenClawAgentDatabaseReadOnly(
         (database) =>
           runSqliteDeferredTransactionSync(database.db, () =>
-            hasSessionLifecycleArtifactCleanupCandidates(database, params),
+            hasSessionLifecycleArtifactCleanupCandidates(database, params, true),
           ),
         databaseOptions,
       );
@@ -267,25 +282,49 @@ export async function prepareSessionLifecycleArtifactCleanup(
   }
   return withSqliteSessionDatabase(
     databaseOptions,
-    (database) => planSessionLifecycleArtifactCleanup(database, params),
+    (database) => {
+      if (cachedDatabase) {
+        try {
+          const candidates = runSqliteDeferredTransactionSync(database.db, () => {
+            assertCanonicalSqliteSessionKeysCurrent(database);
+            return hasSessionLifecycleArtifactCleanupCandidates(database, params, false);
+          });
+          if (!candidates) {
+            return { entries: [], deletePlans: [] };
+          }
+        } catch {
+          // Uncertain admitted sources retain the planner's validation and diagnosis.
+        }
+      }
+      return planSessionLifecycleArtifactCleanup(database, params);
+    },
     undefined,
     params.diagnostics,
   );
 }
 
-function planSessionLifecycleArtifactCleanup(
-  database: OpenClawAgentDatabase,
-  params: {
-    agentId?: string;
-    archiveRemovedEntryTranscripts: boolean;
-    archiveDirectory: string;
-    pluginOwnerId?: string;
-    sessionKeySegmentPrefix: string;
-    transcriptContentMarker: string;
-    orphanTranscriptMinAgeMs: number;
-    nowMs: number;
-    diagnostics?: SqliteSessionArtifactPreparationDiagnostics;
-  },
+export function readSessionLifecycleArtifactCleanup(
+  database: OpenClawAgentReadOnlyDatabase,
+  params: LifecycleArtifactCleanupInput,
+  expectedSource: DatabaseFileIdentity,
+): LifecycleArtifactCleanupPlan {
+  assertOpenClawAgentDatabaseIdentity(database, expectedSource);
+  const read = () => {
+    assertCanonicalSqliteSessionKeysCurrent(database);
+    return hasSessionLifecycleArtifactCleanupCandidates(database, params, false)
+      ? planSessionLifecycleArtifactCleanup(database, params)
+      : { entries: [], deletePlans: [] };
+  };
+  const plan = readWithCanonicalSessionReaderContinuation(database, params.continuation, () =>
+    database.db.isTransaction ? read() : runSqliteDeferredTransactionSync(database.db, read),
+  );
+  assertOpenClawAgentDatabaseIdentity(database, expectedSource);
+  return plan;
+}
+
+export function planSessionLifecycleArtifactCleanup(
+  database: OpenClawAgentReadOnlyDatabase,
+  params: LifecycleArtifactCleanupInput,
 ): LifecycleArtifactCleanupPlan {
   const diagnostics = params.diagnostics;
   type Phase = "nodeInventoryMs" | "referencePlanningMs" | "orphanPlanningMs";
@@ -320,9 +359,16 @@ function planSessionLifecycleArtifactCleanup(
     if (diagnostics) {
       diagnostics.nodeRows = rows.length;
     }
+    const scopedRows = rows.filter(
+      (row) =>
+        sessionKeyBelongsToAgent(row.session_key, params.agentId) &&
+        sessionKeySegmentStartsWith(row.session_key, params.sessionKeySegmentPrefix),
+    );
     const removedSessionIds = new Set<string>();
     const entries: LifecycleArtifactCleanupPlan["entries"] = [];
-    const projectedStore = readSessionEntryStore(database);
+    const scopedStore = readSessionEntryStore(database, {
+      sessionKeys: scopedRows.map((row) => row.session_key),
+    });
     const foreignOwnedSessionIds = params.pluginOwnerId
       ? new Set(
           executeSqliteQuerySync(
@@ -335,14 +381,8 @@ function planSessionLifecycleArtifactCleanup(
           ).rows.map((row) => row.session_id),
         )
       : undefined;
-    for (const row of rows) {
-      if (
-        !sessionKeyBelongsToAgent(row.session_key, params.agentId) ||
-        !sessionKeySegmentStartsWith(row.session_key, params.sessionKeySegmentPrefix)
-      ) {
-        continue;
-      }
-      const entry = projectedStore[row.session_key];
+    for (const row of scopedRows) {
+      const entry = scopedStore[row.session_key];
       const sessionIds = uniqueStrings([
         row.current_session_id,
         ...(entry ? collectSessionStateIdsForEntry(entry) : []),
@@ -372,22 +412,17 @@ function planSessionLifecycleArtifactCleanup(
       for (const sessionId of sessionIds) {
         removedSessionIds.add(sessionId);
       }
-      entries.push({
-        expectedEntry: entry ? cloneSessionEntry(entry) : undefined,
-        sessionKey: row.session_key,
-      });
-      delete projectedStore[row.session_key];
+      entries.push({ expectedEntry: entry, sessionKey: row.session_key });
     }
 
     if (diagnostics) {
       diagnostics.selectedEntries = entries.length;
     }
     recordPhase("referencePlanningMs");
-    const referencedSessionIds = collectProjectedReferencedSessionIds({
+    const referencedSessionIds = readReferencedSessionIds(
       database,
-      excludedSessionKeys: entries.map((entry) => entry.sessionKey),
-      projectedStore,
-    });
+      new Set(entries.map((entry) => entry.sessionKey)),
+    );
     if (diagnostics) {
       diagnostics.referenceIds = referencedSessionIds.size;
     }

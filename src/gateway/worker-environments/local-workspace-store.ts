@@ -14,9 +14,18 @@ const table = "local_workspace_projections";
 export type LocalWorkspaceProjection = Selectable<DB[typeof table]>;
 const query = (db: DatabaseSync) => getNodeSqliteKysely<Pick<DB, typeof table>>(db);
 
+export function hasLocalWorkspaceProjectionInDatabase(db: DatabaseSync, id: string): boolean {
+  return (
+    tableExists(db, table) &&
+    executeSqliteQueryTakeFirstSync(
+      db,
+      query(db).selectFrom(table).select("worktree_id").where("worktree_id", "=", id),
+    ) !== undefined
+  );
+}
+
 /** Local executions share the reconciliation engine, never a remote placement identity. */
 export function localWorkspaceStore(env: NodeJS.ProcessEnv = process.env) {
-  const read = () => openOpenClawStateDatabase({ env }).db;
   const getFrom = (db: DatabaseSync, id: string) =>
     tableExists(db, table)
       ? executeSqliteQueryTakeFirstSync(
@@ -24,11 +33,10 @@ export function localWorkspaceStore(env: NodeJS.ProcessEnv = process.env) {
           query(db).selectFrom(table).selectAll().where("worktree_id", "=", id),
         )
       : undefined;
-  const get = (id: string) => getFrom(read(), id);
   return {
-    get,
+    get: (id: string) => getFrom(openOpenClawStateDatabase({ env }).db, id),
     revision(id: string) {
-      const db = read();
+      const db = openOpenClawStateDatabase({ env }).db;
       return tableExists(db, table)
         ? executeSqliteQueryTakeFirstSync(
             db,

@@ -1,5 +1,5 @@
 {
-  "startupJsGzipBytes": 364912,
-  "reason": "PR153238 landing continuation approved the bounded 512 B cap increase for cold clipboard image custody; measured Node24 gzip baseline, preserving current main route-label changes. The 512 B growth and 64 B build-variance allowances are unchanged.",
-  "updatedAt": "2026-09-20"
+  "startupJsGzipBytes": 372878,
+  "reason": "Native sidebar bridge landing: measured production startup JS 372,878 B after rebasing onto main, +1,107 B (0.298%) over the prior baseline within the approved sub-1% ceiling rule. Matched-toolchain main measured 372,406 B versus 372,597 B before final action-module extraction (+191 B); retain the existing 512 B growth and 64 B build-variance allowances.",
+  "updatedAt": "2026-10-02"
 }

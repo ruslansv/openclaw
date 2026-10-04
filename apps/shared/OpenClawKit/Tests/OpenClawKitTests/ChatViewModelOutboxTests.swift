@@ -106,6 +106,7 @@ actor OutboxTransportState {
     var sentMessages: [String] = []
     var sentSessionKeys: [String] = []
     var sentAgentIDs: [String?] = []
+    var historyRequestSessionKeys: [String] = []
     var historyRequestAgentIDs: [String?] = []
     var sentThinkingLevels: [String] = []
     var sentSessionSettings: [OpenClawChatSessionSettingsExpectation?] = []
@@ -115,8 +116,9 @@ actor OutboxTransportState {
         self.sendFails = sendFails
     }
 
-    func recordHistoryRequest(agentID: String?) {
+    func recordHistoryRequest(sessionKey: String, agentID: String?) {
         self.historyRequestCount += 1
+        self.historyRequestSessionKeys.append(sessionKey)
         self.historyRequestAgentIDs.append(agentID)
     }
 
@@ -271,7 +273,7 @@ final class OutboxTestTransport: @unchecked Sendable, OpenClawChatTransport {
         agentID: String?,
         expectedRoute: Int?) async throws -> OpenClawChatHistoryPayload
     {
-        await self.state.recordHistoryRequest(agentID: agentID)
+        await self.state.recordHistoryRequest(sessionKey: sessionKey, agentID: agentID)
         if let expectedRoute, await state.routeGeneration != expectedRoute {
             throw CancellationError()
         }
@@ -552,6 +554,7 @@ actor ScriptedOutbox: OpenClawChatCommandOutbox {
 
     private nonisolated let base: OpenClawChatSQLiteTranscriptCache
     private let forwarding: Forwarding
+    private let parkingHook: (@Sendable () async -> Void)?
     private var loadDelayNanoseconds: UInt64 = 0
     private var enqueueRelease: DeleteGate?
     private var recoveryAvailable = true
@@ -566,9 +569,14 @@ actor ScriptedOutbox: OpenClawChatCommandOutbox {
     private let canceled = DeleteGate()
     private let cancellationRelease = DeleteGate()
 
-    init(base: OpenClawChatSQLiteTranscriptCache, forwarding: Forwarding = .full) {
+    init(
+        base: OpenClawChatSQLiteTranscriptCache,
+        forwarding: Forwarding = .full,
+        parkingHook: (@Sendable () async -> Void)? = nil)
+    {
         self.base = base
         self.forwarding = forwarding
+        self.parkingHook = parkingHook
     }
 
     nonisolated func changes() -> AsyncStream<OpenClawChatOutboxChange> {
@@ -738,6 +746,7 @@ actor ScriptedOutbox: OpenClawChatCommandOutbox {
         in scope: OpenClawChatOutboxScope,
         lastError: String) async -> Bool
     {
+        await self.parkingHook?()
         guard self.parkingAvailable else { return false }
         return await self.base.parkQueuedCommands(in: scope, lastError: lastError)
     }
@@ -1701,7 +1710,7 @@ struct ChatViewModelOutboxTests {
             }
         }
         try await waitUntil("terminal failure flush settled") {
-            await MainActor.run { !vm.isFlushingOutbox }
+            await MainActor.run { vm.outboxFlushTask == nil }
         }
 
         // Tap-to-retry resets attempts; with the gateway accepting again the
@@ -2214,7 +2223,7 @@ struct ChatViewModelOutboxTests {
 
         try await waitUntil("failed send is visible and settled") {
             await MainActor.run {
-                !vm.isFlushingOutbox && vm.messages.contains { vm.outboxState(for: $0.id)?.isFailed == true }
+                vm.outboxFlushTask == nil && vm.messages.contains { vm.outboxState(for: $0.id)?.isFailed == true }
             }
         }
         // Retry must work from the displayed failure, even before reconnect
@@ -2225,7 +2234,7 @@ struct ChatViewModelOutboxTests {
             await transport.goOnline()
             try await waitUntil("reconnect reconciles without replay") {
                 let historyRefreshed = await transport.state.historyRequestCount > historyRequests
-                return await MainActor.run { historyRefreshed && vm.healthOK && !vm.isFlushingOutbox }
+                return await MainActor.run { historyRefreshed && vm.healthOK && vm.outboxFlushTask == nil }
             }
         }
         #expect(await store.loadCommands().map(\.status) == [.failed])

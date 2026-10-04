@@ -27,7 +27,7 @@ plugins.
 | `api.registerTrustedToolPolicy(...)`                                                 | Manifest-gated trusted pre-plugin tool policy that can block or rewrite tool params                                                                        |
 | `api.registerToolMetadata(...)`                                                      | Tool catalog display metadata without changing the tool implementation                                                                                     |
 | `api.registerCommand(...)`                                                           | Scoped plugin commands; command results can set `continueAgent: true` or `suppressReply: true`; Discord native commands support `descriptionLocalizations` |
-| `api.session.controls.registerControlUiDescriptor(...)`                              | Control UI contribution descriptors for session, tool, run, settings, or tab surfaces                                                                      |
+| `api.session.controls.registerControlUiDescriptor(...)`                              | Control UI contribution descriptors; the `tab`, `widget`, and `link-reader` surfaces are rendered                                                          |
 | `api.lifecycle.registerRuntimeLifecycle(...)`                                        | Cleanup callbacks for plugin-owned runtime resources on reset/delete/reload paths                                                                          |
 | `api.agent.events.registerAgentEventSubscription(...)`                               | Sanitized event subscriptions for workflow state and monitors                                                                                              |
 | `api.runContext.setRunContext(...)` / `getRunContext(...)` / `clearRunContext(...)`  | Per-run plugin scratch state cleared on terminal run lifecycle                                                                                             |
@@ -218,6 +218,28 @@ ports.
 Tabs backed by plugin-managed auth keep their direct iframe behavior and do not
 request or require this Gateway grant.
 
+Authenticated, same-origin plugin tabs can request session navigation without
+loosening the iframe sandbox. Send this session-only message to the parent
+after a user click:
+
+```typescript
+window.parent.postMessage(
+  { type: "openclaw-plugin-session-open", sessionKey: "agent:writer:project-review" },
+  window.location.origin,
+);
+```
+
+Only `type`, `sessionKey`, and an optional `agentId` are accepted. Omit absent
+fields. The key must be routable, at most 512 UTF-16 code units, and contain no
+control characters or surrounding whitespace. An explicit agent must match the
+agent in a qualified key. The host checks the currently mounted frame,
+authenticated descriptor, connection, and frame-grant lifetime before using
+normal session navigation. This message grants no session access, accepts no
+arbitrary URL, and returns no credentials or session content. Standalone pages
+should retain an ordinary Control UI link as their non-embedded path. Use
+`buildControlUiSessionPath` from `openclaw/plugin-sdk/session-discussion` to build
+that path.
+
 ```typescript
 api.session.controls.registerControlUiDescriptor({
   surface: "tab",
@@ -259,10 +281,8 @@ plugin code that calls
 `api.unscheduleSessionTurnsByTag` directly.
 
 `scheduleSessionTurn(...)` is a session-scoped convenience over the Gateway
-Cron scheduler. Cron owns timing and creates the background task record when the
-turn runs; the Plugin SDK only constrains the target session, plugin-owned
-naming, and cleanup. Use `api.runtime.tasks.managedFlows` inside the scheduled
-turn when the work itself needs durable multi-step Task Flow state.
+Cron scheduler. Cron owns timing and run history; the Plugin SDK only constrains
+the target session, plugin-owned naming, and cleanup.
 
 Within session extensions, `openclaw/plugin-sdk/agent-sessions` provides the host's
 model-selection helpers. Exact provider/model IDs take precedence over case-insensitive
@@ -324,8 +344,13 @@ Examples of non-Plan consumers:
   seam for async output reducers such as tokenjuice.
 
 Plugins must declare `contracts.agentToolResultMiddleware` for each targeted
-runtime, for example `["openclaw", "codex"]`. Installed plugins without that
-contract, or without explicit enablement, cannot register this middleware; keep
+runtime. Supported ids are `agentsapi`, `codex`, and `openclaw`; for example,
+`["agentsapi", "codex", "openclaw"]`. Omitting registration `runtimes` uses
+all supported runtimes declared in the manifest. An explicit registration scope
+can select a subset of those declared runtimes.
+
+Installed plugins without that contract, or without explicit enablement, cannot
+register this middleware; keep
 normal OpenClaw plugin hooks for work that does not need pre-model tool-result
 timing. The old
 embedded-runner-only extension factory registration path has been removed.
@@ -449,13 +474,17 @@ The UI clears removed contributions and ignores stale request results.
 
 The `linkReader` fields are:
 
-| Field           | Contract                                                                                                                                                                               |
-| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `hosts`         | One to sixteen exact lowercase DNS hostnames; no scheme, wildcard, or port.                                                                                                            |
-| `pathPattern`   | An anchored JavaScript Unicode regular expression, at most 1,024 characters, matched against the URL pathname. Installed plugin code owns the pattern; keep it simple and predictable. |
-| `detailMethod`  | Same-plugin read method receiving `{ url, refresh? }` and returning a `ControlUiLinkReaderDocument`.                                                                                   |
-| `previewMethod` | Optional same-plugin read method receiving `{ url }` and returning a `ControlUiLinkReaderPreview` for hover or keyboard focus. Omit it for URLs that should not fetch previews.        |
-| `imageMethod`   | Optional same-plugin read method receiving `{ url }` and returning `{ url, dataUrl }` for inline images.                                                                               |
+| Field           | Contract                                                                                                                                                                                  |
+| --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `hosts`         | One to sixteen exact lowercase DNS hostnames; no scheme, wildcard, or port.                                                                                                               |
+| `pathPattern`   | An anchored JavaScript Unicode regular expression, at most 1,024 characters, matched against the URL pathname. Installed plugin code owns the pattern; keep it simple and predictable.    |
+| `detailMethod`  | Same-plugin read method receiving `{ url, agentId?, refresh? }` and returning a `ControlUiLinkReaderDocument`.                                                                            |
+| `previewMethod` | Optional same-plugin read method receiving `{ url, agentId? }` and returning a `ControlUiLinkReaderPreview` for hover or keyboard focus. Omit it for URLs that should not fetch previews. |
+| `imageMethod`   | Optional same-plugin read method receiving `{ url }` and returning `{ url, dataUrl }` for inline images.                                                                                  |
+
+Preview and detail requests include the selected `agentId` when available; detail
+requests also accept `refresh: true`. The receiving owner must authorize identity
+selection rather than treating this hint as access authority.
 
 Method names are bounded to 128 characters. Credentials in URLs and non-HTTPS
 URLs are never intercepted. A descriptor is a routing hint, not authorization
@@ -464,7 +493,11 @@ and request parameters. Ordinary modified clicks, downloads, unsupported links,
 and explicit external actions keep their native destination.
 
 The exported passive models include a source `url`, `title`, optional subtitle,
-author, dates, badge, and label/value metadata. A document adds Markdown `body`,
+author, dates, badge, and label/value metadata. A badge can include an optional
+`timestamp` for its status event (for example, a merge or closure). The reader
+displays that timestamp beside the badge in the browser's local time, falling
+back to `createdAt` when it is absent. Keep `createdAt` as the original creation
+time; the plugin owns selecting the event timestamp. A document adds Markdown `body`,
 optional comments and changed-file patches, totals, and explicit partial or
 truncated flags. Comment IDs and source links, review context labels, and badge
 text come from the plugin rather than service-specific conditions in core.

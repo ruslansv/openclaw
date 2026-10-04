@@ -6,16 +6,6 @@ import { createAcpTestConfig as createCfg } from "./test-fixtures/acp-runtime.js
 
 type Delivery = { kind: string; text?: string };
 
-function countMatching<T>(items: readonly T[], predicate: (item: T) => boolean): number {
-  let count = 0;
-  for (const item of items) {
-    if (predicate(item)) {
-      count += 1;
-    }
-  }
-  return count;
-}
-
 function createProjectorHarness(
   cfgOverrides?: Parameters<typeof createCfg>[0],
   opts?: {
@@ -143,7 +133,7 @@ async function runHiddenBoundaryCase(params: {
     });
   }
   await emitText(projector, params.secondText ?? "I don't");
-  await projector.flush(true);
+  await projector.flush();
 
   expect(combinedBlockText(deliveries)).toBe(params.expectedText);
 }
@@ -198,7 +188,7 @@ describe("createAcpReplyProjector", () => {
     const { deliveries, projector } = createProjectorHarness();
 
     await emitText(projector, "a".repeat(70));
-    await projector.flush(true);
+    await projector.flush();
 
     expect(deliveries).toEqual([{ kind: "final", text: "a".repeat(70) }]);
   });
@@ -221,7 +211,7 @@ describe("createAcpReplyProjector", () => {
       conversationContext = `${marker}\nPrivate updated context. Keep hidden.`;
       await emitText(projector, `${marker}\nPrivate updated context. `);
       await emitText(projector, "Keep hidden. Visible answer after.");
-      await projector.flush(true);
+      await projector.flush();
 
       expect(deliveries.map((delivery) => delivery.text).join("")).toBe(
         "Visible answer before.  Visible answer after.",
@@ -282,7 +272,7 @@ describe("createAcpReplyProjector", () => {
     await emitText(projector, "done");
     allowToolSummaries = false;
 
-    await projector.flush(true);
+    await projector.flush();
 
     expect(deliveries).toEqual([{ kind: "final", text: "done" }]);
   });
@@ -310,36 +300,24 @@ describe("createAcpReplyProjector", () => {
     await emitText(projector, "I don't");
     allowToolSummaries = false;
 
-    await projector.flush(true);
+    await projector.flush();
 
     expect(deliveries).toEqual([{ kind: "final", text: "fallback.\n\nI don't" }]);
   });
 
-  it("flushes staggered live text deltas after idle gaps", async () => {
-    vi.useFakeTimers();
-    try {
-      const { deliveries, projector } = createStreamHarness("live");
+  it("flushes staggered live text deltas at explicit boundaries", async () => {
+    const { deliveries, projector } = createStreamHarness("live");
 
-      await emitText(projector, "A");
-      await vi.advanceTimersByTimeAsync(760);
-      await projector.flush(false);
-
-      await emitText(projector, "B");
-      await vi.advanceTimersByTimeAsync(760);
-      await projector.flush(false);
-
-      await emitText(projector, "C");
-      await vi.advanceTimersByTimeAsync(760);
-      await projector.flush(false);
-
-      expect(blockDeliveries(deliveries)).toEqual([
-        { kind: "block", text: "A" },
-        { kind: "block", text: "B" },
-        { kind: "block", text: "C" },
-      ]);
-    } finally {
-      vi.useRealTimers();
+    for (const text of ["A", "B", "C"]) {
+      await emitText(projector, text);
+      await projector.flush();
     }
+
+    expect(blockDeliveries(deliveries)).toEqual([
+      { kind: "block", text: "A" },
+      { kind: "block", text: "B" },
+      { kind: "block", text: "C" },
+    ]);
   });
 
   it("does not flush short live fragments mid-phrase on idle", async () => {
@@ -353,7 +331,7 @@ describe("createAcpReplyProjector", () => {
       expect(deliveries).toStrictEqual([]);
 
       await emitText(projector, "`wd-cli` searches right away. ");
-      await projector.flush(false);
+      await projector.flush();
 
       expect(deliveries).toEqual([
         {
@@ -381,7 +359,7 @@ describe("createAcpReplyProjector", () => {
     await emitText(projector, " now?");
     expect(deliveries).toStrictEqual([]);
 
-    await projector.flush(true);
+    await projector.flush();
     expect(deliveries).toHaveLength(3);
     expect(deliveries[0]).toEqual({
       kind: "tool",
@@ -391,7 +369,7 @@ describe("createAcpReplyProjector", () => {
     expect(deliveries[2]).toEqual({ kind: "final", text: "What now?" });
   });
 
-  it("flushes buffered status/tool output on error in deliveryMode=final_only", async () => {
+  it("flushes buffered status/tool output without final text in deliveryMode=final_only", async () => {
     const { deliveries, projector } = createFinalOnlyStatusToolHarness();
 
     await emitStatus(projector, "available commands updated (7)", "available_commands_update");
@@ -404,7 +382,7 @@ describe("createAcpReplyProjector", () => {
     });
     expect(deliveries).toStrictEqual([]);
 
-    await projector.flush(true);
+    await projector.flush();
     expect(deliveries).toHaveLength(2);
     expect(deliveries[0]).toEqual({
       kind: "tool",
@@ -486,7 +464,10 @@ describe("createAcpReplyProjector", () => {
     });
 
     expect(deliveries.length).toBe(2);
-    expectToolCallSummary(deliveries[0]);
+    expect(deliveries[0]).toEqual({
+      kind: "tool",
+      text: "Tool Call: List files · status=in_progress",
+    });
     expectToolCallSummary(deliveries[1]);
   });
 
@@ -550,9 +531,9 @@ describe("createAcpReplyProjector", () => {
       status: "in_progress",
     });
     await emitText(projector, "hello");
-    await projector.flush(true);
+    await projector.flush();
 
-    expect(countMatching(deliveries, (entry) => entry.kind === "tool")).toBe(4);
+    expect(deliveries.filter((entry) => entry.kind === "tool")).toHaveLength(4);
     expect(deliveries[0]).toEqual({
       kind: "tool",
       text: prefixSystemMessage("available commands updated"),
@@ -640,7 +621,7 @@ describe("createAcpReplyProjector", () => {
       text: "Run test (in_progress)",
     });
     await emitText(projector, "I don't");
-    await projector.flush(true);
+    await projector.flush();
 
     expect(combinedBlockText(deliveries)).toBe("fallback. I don't");
     expect(deliveries.some((delivery) => delivery.kind === "tool")).toBe(false);
@@ -660,13 +641,6 @@ describe("createAcpReplyProjector", () => {
     });
   });
 
-  it("uses the built-in space separator for hidden live boundaries", async () => {
-    await runHiddenBoundaryCase({
-      toolCallId: "call_hidden_2",
-      expectedText: "fallback. I don't",
-    });
-  });
-
   it("does not duplicate newlines when previous visible text already ends with newline", async () => {
     await runHiddenBoundaryCase({
       toolCallId: "call_hidden_4",
@@ -681,7 +655,7 @@ describe("createAcpReplyProjector", () => {
     await emitText(projector, "A");
     await emitStatus(projector, "available commands updated", "available_commands_update");
     await emitText(projector, "B");
-    await projector.flush(true);
+    await projector.flush();
 
     expect(combinedBlockText(deliveries)).toBe("AB");
   });

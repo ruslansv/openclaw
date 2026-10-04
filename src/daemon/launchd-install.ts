@@ -93,7 +93,7 @@ async function currentGatewayLaunchAgentLabel(
     ...(configuredCurrentLabel ? [assertValidLaunchAgentLabel(configuredCurrentLabel)] : []),
   ]);
   for (const label of candidates) {
-    if (await isCurrentProcessInsideLaunchdService(label, process.env)) {
+    if (await isCurrentProcessInsideLaunchdService(label)) {
       return label;
     }
   }
@@ -113,19 +113,14 @@ async function assertExternalLaunchAgentMutation(
   );
 }
 
-export async function stageLaunchAgent({
-  stdout,
-  ...args
-}: GatewayServiceInstallArgs): Promise<{ plistPath: string }> {
-  const { plistPath, stdoutPath } = await writeLaunchAgentPlist({ ...args, stdout });
-  writeFormattedLines(
-    stdout,
-    [
-      { label: "Staged LaunchAgent", value: plistPath },
-      { label: "Logs", value: stdoutPath },
-    ],
-    { leadingBlankLine: true },
-  );
+export async function stageLaunchAgent(
+  args: GatewayServiceInstallArgs,
+): Promise<{ plistPath: string }> {
+  const { plistPath, stdoutPath } = await writeLaunchAgentPlist(args);
+  writeFormattedLines(args.stdout, [
+    { label: "Staged LaunchAgent", value: plistPath },
+    { label: "Logs", value: stdoutPath },
+  ]);
   return { plistPath };
 }
 
@@ -169,9 +164,6 @@ async function deactivateLaunchAgentDefinition(domain: string, plistPath: string
 export async function installLaunchAgent(
   args: GatewayServiceInstallArgs,
 ): Promise<{ plistPath: string }> {
-  if (args.beforeLoad) {
-    throw new Error("Deferred native service load is not supported on this platform.");
-  }
   const targetPlistPath = resolveLaunchAgentPlistPath(args.env);
   const label = resolveLaunchAgentLabel(args.env);
   const domain = resolveLaunchAgentGuiDomain();
@@ -269,13 +261,9 @@ export async function installLaunchAgent(
   // `bootstrap` already loads RunAtLoad agents. Avoid `kickstart -k` here:
   // on slow macOS guests it SIGTERMs the freshly booted gateway and pushes the
   // real listener startup past setup's health deadline.
-  writeFormattedLines(
-    args.stdout,
-    [
-      { label: "Installed LaunchAgent", value: plistPath },
-      { label: "Logs", value: stdoutPath },
-    ],
-    { leadingBlankLine: true },
-  );
+  writeFormattedLines(args.stdout, [
+    { label: "Installed LaunchAgent", value: plistPath },
+    { label: "Logs", value: stdoutPath },
+  ]);
   return { plistPath };
 }
