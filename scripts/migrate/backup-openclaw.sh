@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Bash 5.3+ can deadlock writing heredoc pipes on macOS before the reader starts.
+if [[ ${OSTYPE:-} == darwin* && $BASH != /bin/bash ]] && ((BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 3))); then
+  exec /bin/bash "$0" "$@"
+fi
 set -euo pipefail
 
 # shellcheck source=scripts/migrate/lib.sh
@@ -20,6 +24,10 @@ Options:
   --name <name>            Backup name prefix (default: openclaw-backup-<timestamp>)
   --no-stop                Do not stop/restart the gateway; only use when it is already quiesced
   -h, --help               Show this help
+
+Host directory migrations only. Docker volume/tmpfs state is unsupported,
+including with --no-stop. Use container-aware openclaw backup create --verify
+with the complete Compose file set instead; restore into volumes offline.
 EOF
 }
 
@@ -119,6 +127,7 @@ AUTH_PROFILE_SECRET_DIR="$(resolve_abs_path "$AUTH_PROFILE_SECRET_DIR")"
 [[ -d "$WORKSPACE_DIR" ]] || fail "Workspace directory does not exist: $WORKSPACE_DIR"
 [[ -d "$REPO_ROOT" ]] || fail "Repo root does not exist: $REPO_ROOT"
 validate_migration_layout "$CONFIG_DIR" "$WORKSPACE_DIR" "$AUTH_PROFILE_SECRET_DIR" "$ENV_FILE"
+validate_host_migration_storage
 
 timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 BACKUP_NAME="${BACKUP_NAME:-openclaw-backup-${timestamp}}"
@@ -136,7 +145,6 @@ checksum_path="${archive_path}.sha256"
 [[ ! -e "$checksum_path" ]] || fail "Backup output already exists: $checksum_path"
 
 tmpdir="$(mktemp -d)"
-compose_file="$REPO_ROOT/docker-compose.yml"
 restart_gateway=0
 paused_gateway_container_ids=()
 archive_tmp=""
@@ -165,7 +173,7 @@ cleanup() {
   rm -rf "$tmpdir"
   if [[ $restart_gateway -eq 1 ]]; then
     echo "==> Restarting gateway container"
-    if ! docker compose -f "$compose_file" start openclaw-gateway >/dev/null; then
+    if ! migration_compose start openclaw-gateway >/dev/null; then
       echo "ERROR: Backup finished, but openclaw-gateway could not be restarted." >&2
       status=1
     else
@@ -195,15 +203,17 @@ mkdir -p "$stage/payload/config" "$stage/payload/workspace" "$stage/payload/repo
 
 if [[ $STOP_FIRST -eq 1 ]]; then
   require_cmd docker
-  [[ -f "$compose_file" ]] || fail "Compose file not found at $compose_file (use --no-stop only if the gateway is already stopped)."
   if ! gateway_container_ids="$(
-    docker compose -f "$compose_file" ps --all -q openclaw-gateway 2>/dev/null
+    migration_compose ps --all -q openclaw-gateway 2>/dev/null
   )"; then
     fail "Failed to inspect openclaw-gateway. Fix Docker/Compose first or use --no-stop only if the gateway is already stopped."
   fi
   gateway_is_active=0
   while IFS= read -r gateway_container_id; do
     [[ -n "$gateway_container_id" ]] || continue
+    if ! docker inspect --format '{{json .Mounts}}' "$gateway_container_id" | validate_host_migration_mounts; then
+      fail "Cannot safely migrate host directories with the existing Gateway storage."
+    fi
     if ! gateway_state="$(docker inspect --format '{{.State.Status}}' "$gateway_container_id")"; then
       fail "Failed to inspect openclaw-gateway container state: $gateway_container_id"
     fi
@@ -227,7 +237,7 @@ if [[ $STOP_FIRST -eq 1 ]]; then
       done
     fi
     echo "==> Stopping gateway container for a consistent backup"
-    if ! docker compose -f "$compose_file" stop openclaw-gateway >/dev/null; then
+    if ! migration_compose stop openclaw-gateway >/dev/null; then
       fail "Failed to stop openclaw-gateway; no backup was created."
     fi
     while IFS= read -r gateway_container_id; do
@@ -334,7 +344,7 @@ if command -v docker >/dev/null 2>&1; then
     docker version --format '{{.Server.Version}}' 2>/dev/null || true
     echo
     echo "# docker compose ps"
-    docker compose -f "$REPO_ROOT/docker-compose.yml" ps 2>/dev/null || true
+    migration_compose ps 2>/dev/null || true
   } >"$stage/meta/docker.txt"
 fi
 

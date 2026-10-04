@@ -76,3 +76,77 @@ validate_migration_layout() {
     fi
   done
 }
+
+# Let Compose own .env interpolation, COMPOSE_FILE ordering, and default overlays.
+migration_compose() {
+  (
+    cd "$REPO_ROOT"
+    local -a options=(--project-directory "$REPO_ROOT")
+    if [[ -f "$ENV_FILE" ]]; then
+      options+=(--env-file "$ENV_FILE")
+    fi
+    docker compose "${options[@]}" "$@"
+  )
+}
+
+validate_host_migration_mounts() {
+  python3 -c '
+import json
+import sys
+
+storage = json.load(sys.stdin)
+if isinstance(storage, dict):
+    gateway = storage["services"]["openclaw-gateway"]
+    mounts = gateway.get("volumes", []) + [
+        {"type": "tmpfs", "target": target.split(":", 1)[0]}
+        for target in gateway.get("tmpfs", [])
+    ]
+else:
+    mounts = storage
+for mount in mounts:
+    target = mount.get("target", mount.get("Destination", "")).rstrip("/")
+    kind = mount.get("type", mount.get("Type"))
+    if kind not in {"volume", "tmpfs"}:
+        continue
+    if any(target == root or target.startswith(root + "/") for root in (
+        "/home/node/.openclaw", "/home/node/.config/openclaw"
+    )):
+        raise SystemExit(
+            "ERROR: Docker-managed storage at " + target +
+            " is not captured or restored by host migration helpers. "
+            "Use openclaw backup create --verify through the full Compose file set; "
+            "restore to staging and activate into the actual volumes offline."
+        )
+'
+}
+
+validate_host_migration_storage() {
+  local selected_files="${COMPOSE_FILE:-}"
+  local compose_env_file="$ENV_FILE"
+  local directory="$REPO_ROOT"
+  local compose_name
+  if [[ ! -f "$compose_env_file" ]]; then
+    compose_env_file="$REPO_ROOT/.env"
+    selected_files="${selected_files:-${COMPOSE_ENV_FILES:-}}"
+  fi
+  # Detect possible inputs only; Compose owns env syntax, values, and precedence.
+  if [[ -f "$compose_env_file" ]] && grep -Eq 'COMPOSE_(FILE|ENV_FILES)' "$compose_env_file"; then
+    selected_files=env
+  fi
+  # Preserve offline host copies only when Compose has no selected/discoverable input.
+  while [[ -z "$selected_files" ]]; do
+    for compose_name in compose.yaml compose.yml docker-compose.yaml docker-compose.yml; do
+      if [[ -f "$directory/$compose_name" ]]; then
+        selected_files="$directory/$compose_name"
+        break
+      fi
+    done
+    [[ -n "$selected_files" || "$directory" == / ]] && break
+    directory="$(dirname "$directory")"
+  done
+  [[ -n "$selected_files" ]] || return 0
+  require_cmd docker
+  if ! migration_compose config --format json | validate_host_migration_mounts; then
+    fail "Cannot safely migrate host directories with the selected Compose storage."
+  fi
+}

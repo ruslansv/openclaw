@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# Bash 5.3+ can deadlock writing heredoc pipes on macOS before the reader starts.
+if [[ ${OSTYPE:-} == darwin* && $BASH != /bin/bash ]] && ((BASH_VERSINFO[0] > 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] >= 3))); then
+  exec /bin/bash "$0" "$@"
+fi
 set -euo pipefail
 
 # shellcheck source=scripts/migrate/lib.sh
@@ -20,6 +24,10 @@ Options:
   --apply-env              Overwrite --env-file with backup .env (default: false)
   --no-stop                Do not stop gateway container before restore
   -h, --help               Show this help
+
+Host directory migrations only. Docker volume/tmpfs state is unsupported,
+including with --no-stop. Use container-aware openclaw backup create --verify
+with the complete Compose file set instead; restore into volumes offline.
 EOF
 }
 
@@ -311,6 +319,7 @@ CONFIG_DIR="$(resolve_abs_path "$CONFIG_DIR")"
 WORKSPACE_DIR="$(resolve_abs_path "$WORKSPACE_DIR")"
 AUTH_PROFILE_SECRET_DIR="$(resolve_abs_path "$AUTH_PROFILE_SECRET_DIR")"
 validate_migration_layout "$CONFIG_DIR" "$WORKSPACE_DIR" "$AUTH_PROFILE_SECRET_DIR" "$ENV_FILE"
+validate_host_migration_storage
 
 source_arch="$(grep -E '^source_arch=' "$extract_dir/meta/backup.env" | cut -d= -f2- || true)"
 target_arch="$(uname -m)"
@@ -399,7 +408,7 @@ restore_cleanup() {
   fi
   if [[ $status -ne 0 && $gateway_restore_on_failure -eq 1 ]]; then
     echo "==> Restoring gateway state after failed restore" >&2
-    if ! docker compose -f "$REPO_ROOT/docker-compose.yml" start openclaw-gateway >/dev/null; then
+    if ! migration_compose start openclaw-gateway >/dev/null; then
       echo "ERROR: Active data was rolled back, but openclaw-gateway could not be restarted." >&2
       status=1
     else
@@ -586,19 +595,24 @@ if [[ -f "$extract_dir/payload/repo/.env" ]]; then
   fi
   env_staging="$(mktemp "$(dirname "$env_destination")/.${env_destination##*/}.restore-${timestamp}.XXXXXX")"
   write_restored_env "$extract_dir/payload/repo/.env" "$env_staging"
+  # Applying an archived COMPOSE_FILE can select volumes the host copy cannot restore.
+  if [[ $APPLY_ENV -eq 1 ]]; then
+    ENV_FILE="$env_staging" validate_host_migration_storage
+  fi
   chmod 600 "$env_staging"
 fi
 
 if [[ $STOP_FIRST -eq 1 ]]; then
   require_cmd docker
-  compose_file="$REPO_ROOT/docker-compose.yml"
-  [[ -f "$compose_file" ]] || fail "Compose file not found at $compose_file (use --no-stop to skip stopping the gateway)."
-  if ! gateway_container_ids="$(docker compose -f "$compose_file" ps --all -q openclaw-gateway 2>/dev/null)"; then
+  if ! gateway_container_ids="$(migration_compose ps --all -q openclaw-gateway 2>/dev/null)"; then
     fail "Failed to inspect openclaw-gateway. Fix Docker/Compose first or use --no-stop only if the gateway is already stopped."
   fi
   gateway_is_active=0
   while IFS= read -r gateway_container_id; do
     [[ -n "$gateway_container_id" ]] || continue
+    if ! docker inspect --format '{{json .Mounts}}' "$gateway_container_id" | validate_host_migration_mounts; then
+      fail "Cannot safely migrate host directories with the existing Gateway storage."
+    fi
     if ! gateway_state="$(docker inspect --format '{{.State.Status}}' "$gateway_container_id")"; then
       fail "Failed to inspect openclaw-gateway container state: $gateway_container_id"
     fi
@@ -620,7 +634,7 @@ if [[ $STOP_FIRST -eq 1 ]]; then
       done
     fi
     echo "==> Stopping gateway container"
-    if ! docker compose -f "$compose_file" stop openclaw-gateway >/dev/null 2>&1; then
+    if ! migration_compose stop openclaw-gateway >/dev/null 2>&1; then
       fail "Failed to stop openclaw-gateway. Fix Docker/Compose first or rerun with --no-stop if the gateway is already stopped."
     fi
   fi

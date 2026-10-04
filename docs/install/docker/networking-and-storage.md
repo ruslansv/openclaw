@@ -143,18 +143,53 @@ stale directories hidden underneath those nested mounts.
 
 Before an upgrade, create and verify a container-aware backup. Running the
 backup command through Compose makes it see the active external volumes and
-the bind-mounted workspace:
+the bind-mounted workspace. Use the actual deployment's complete Compose file
+set in its original order; omit the extra overlay below only if your deployment
+does not use it:
 
 ```bash
 mkdir -p backups/pre-upgrade
-docker compose run --rm -T \
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.persistence.yml \
+  -f docker-compose.extra.yml \
+  run --rm -T \
   -v "$PWD/backups/pre-upgrade:/backup" \
   openclaw-cli backup create --output /backup --verify --json
 ```
 
-Keep the previous image tag and backup together. SQLite schema upgrades can
-make an old image unable to open the new database, so rollback requires both
-the old image and the matching pre-upgrade state backup.
+The output directory must be writable by the container's `node` user. Keep the
+archive with the previous image, deployment revision, `.env`, all Compose files,
+and a separate protected copy of `OPENCLAW_AUTH_PROFILE_SECRET_DIR`. The native
+archive does not automatically include arbitrary mounts, such as an SSH deploy
+key stored in that secret directory. Treat all backup assets as credentials.
+
+The shell helpers `scripts/migrate/backup-openclaw.sh` and
+`scripts/migrate/restore-openclaw.sh` copy host directories; they do not capture
+or restore Docker volume contents. They reject unsupported volume mounts before
+changing Gateway lifecycle or active data. `--no-stop` does not bypass this
+check. The helpers resolve the selected Compose configuration; stop-first
+operations also check the existing Gateway mounts. With `--no-stop`, only the
+selected configuration is checked, so it must describe the offline deployment.
+Host copies of `.openclaw/state` and `.openclaw/agents` are not recovery points
+for the external volumes mounted over them.
+
+Native backups use consistent per-database SQLite snapshots, but are not atomic
+across all databases and config. They also sanitize transient delivery state;
+they do not preserve an exactly-once delivery continuation boundary. See
+[Backup](/cli/backup) for included assets and exclusions.
+
+Before upgrading, rehearse restoration with isolated volumes and no production
+channel connections. `openclaw backup restore` extracts into a fresh staging
+directory; it does not activate data in Docker volumes. Activation requires an
+offline operator step to put the staged state and agent assets into the actual
+volume destinations and restore the bind-mounted assets with the correct
+ownership. Do not restore only the hidden host directories. See
+[Restore a full archive](/install/backups#restore-a-full-archive).
+
+SQLite schema upgrades can make an old image unable to open the new database,
+so rollback requires the old image and matching pre-upgrade data. Verification
+of an archive alone does not prove that the deployment can be restored.
 
 For full VM persistence details, see [Docker VM Runtime - What persists where](/install/docker-vm-runtime#what-persists-where).
 

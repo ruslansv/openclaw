@@ -9,7 +9,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { chmod, mkdir, symlink, unlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, rename, symlink, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -56,9 +56,17 @@ async function writeDockerStub(root: string, repoRoot: string, initialState = "r
     dockerStub,
     `#!/usr/bin/env bash
 set -eu
-printf '%s\\n' "$*" >> "$DOCKER_LOG"
+printf '%s\\n' "$*" >> "\${DOCKER_LOG:-/dev/null}"
 case " $* " in
+  *" config --format json "*)
+    if [ -n "\${DOCKER_COMPOSE_CONFIG:-}" ]; then
+      printf '%s\\n' "$DOCKER_COMPOSE_CONFIG"
+    else
+      printf '%s\\n' '{"services":{"openclaw-gateway":{"volumes":[]}}}'
+    fi
+    ;;
   *" ps --all -q openclaw-gateway "*) printf '%s\\n' test-container ;;
+  *" inspect --format {{json .Mounts}} test-container "*) printf '%s\\n' "\${DOCKER_CONTAINER_MOUNTS:-[]}" ;;
   *" inspect --format {{.State.Status}} test-container "*) cat "$DOCKER_STATE_FILE" ;;
   *" unpause test-container "*) printf '%s\\n' running > "$DOCKER_STATE_FILE" ;;
   *" pause test-container "*) printf '%s\\n' paused > "$DOCKER_STATE_FILE" ;;
@@ -106,10 +114,7 @@ describe("openclaw Docker migration helpers", () => {
     const restoredAuthProfileSecretDir = path.join(root, "restored-$tenant's-auth-secrets");
     const backupDir = path.join(root, "backups");
     await mkdir(repoRoot, { recursive: true });
-    const { binDir, composePath, dockerLog, dockerStateFile } = await writeDockerStub(
-      root,
-      repoRoot,
-    );
+    const { binDir, dockerLog, dockerStateFile } = await writeDockerStub(root, repoRoot);
     await writeFixtureFile(path.join(configDir, "openclaw.json"), '{"ok":true}\n');
     await writeFixtureFile(path.join(configDir, "odd\nname.txt"), "newline-safe\n");
     await writeFixtureFile(path.join(configDir, "odd\rname.txt"), "carriage-return-safe\n");
@@ -192,8 +197,8 @@ esac
     expect(backup.status).toBe(0);
 
     const dockerCalls = readFileSync(dockerLog, "utf8");
-    const stopCall = `compose -f ${composePath} stop openclaw-gateway`;
-    const startCall = `compose -f ${composePath} start openclaw-gateway`;
+    const stopCall = `compose --project-directory ${repoRoot} --env-file ${path.join(repoRoot, ".env")} stop openclaw-gateway`;
+    const startCall = `compose --project-directory ${repoRoot} --env-file ${path.join(repoRoot, ".env")} start openclaw-gateway`;
     expect(dockerCalls).toContain("ps --all -q openclaw-gateway");
     expect(dockerCalls).toContain("inspect --format {{.State.Status}} test-container");
     expect(dockerCalls.indexOf(stopCall)).toBeGreaterThanOrEqual(0);
@@ -208,6 +213,155 @@ esac
     expect(archiveList.status).toBe(0);
     expect(archiveList.stdout).not.toContain("plugin-skills");
     expect(archiveList.stdout).not.toContain("payload/workspace/.venv/bin/python3");
+
+    // Exercise both entrypoints: host copies must reject storage hidden by Docker
+    // before stopping the Gateway, publishing a backup, or replacing target data.
+    const volumeConfigDir = path.join(root, "volume-target-config");
+    const volumeWorkspaceDir = path.join(root, "volume-target-workspace");
+    const volumeSecretDir = path.join(root, "volume-target-secrets");
+    await writeFixtureFile(path.join(volumeConfigDir, "original.json"), "original\n");
+    await writeFixtureFile(path.join(volumeWorkspaceDir, "original.txt"), "original\n");
+    await writeFixtureFile(path.join(volumeSecretDir, "original.key"), "original\n");
+    for (const { target, noStop, storageSource, composeFile, selection } of [
+      {
+        target: "/home/node/.openclaw/state",
+        noStop: false,
+        storageSource: "config",
+        composeFile: "deployment.yml",
+        selection: "spaced",
+      },
+      {
+        target: "/home/node/.openclaw/agents",
+        noStop: true,
+        storageSource: "config",
+        composeFile: "compose.yaml",
+        selection: "default",
+      },
+      {
+        target: "/home/node/.openclaw/state",
+        noStop: false,
+        storageSource: "container",
+        composeFile: "docker-compose.yml",
+        selection: "default",
+      },
+      {
+        target: "/home/node/.openclaw/state",
+        noStop: true,
+        storageSource: "tmpfs",
+        composeFile: "deployment.yml",
+        selection: "colon",
+      },
+      {
+        target: "/home/node/.openclaw/state",
+        noStop: true,
+        storageSource: "config",
+        composeFile: "deployment.yml",
+        selection: "fallback",
+      },
+      {
+        target: "/home/node/.openclaw/state",
+        noStop: true,
+        storageSource: "config",
+        composeFile: "deployment.yml",
+        selection: "env-files",
+      },
+    ]) {
+      const originalEnv = readFileSync(path.join(repoRoot, ".env"), "utf8");
+      if (composeFile !== "docker-compose.yml") {
+        await rename(path.join(repoRoot, "docker-compose.yml"), path.join(repoRoot, composeFile));
+      }
+      if (composeFile === "deployment.yml") {
+        const declaration =
+          selection === "colon" ? `COMPOSE_FILE: ${composeFile}` : `COMPOSE_FILE = ${composeFile}`;
+        await writeFile(path.join(repoRoot, ".env"), originalEnv + `${declaration}\n`);
+      }
+      const guardEnv = {
+        DOCKER_LOG: dockerLog,
+        DOCKER_STATE_FILE: dockerStateFile,
+        DOCKER_COMPOSE_CONFIG: JSON.stringify({
+          services: {
+            "openclaw-gateway": {
+              volumes:
+                storageSource === "config" ? [{ type: "volume", source: "runtime", target }] : [],
+              tmpfs: storageSource === "tmpfs" ? [target] : [],
+            },
+          },
+        }),
+        DOCKER_CONTAINER_MOUNTS: JSON.stringify(
+          storageSource === "container" ? [{ Type: "volume", Destination: target }] : [],
+        ),
+        PATH: `${binDir}:${process.env.PATH ?? ""}`,
+        ...(selection === "env-files" ? { COMPOSE_ENV_FILES: path.join(repoRoot, ".env") } : {}),
+      };
+      const envFileArgs =
+        selection === "fallback" || selection === "env-files"
+          ? ["--env-file", path.join(repoRoot, "missing.env")]
+          : [];
+      if (selection === "env-files") {
+        await rename(path.join(repoRoot, ".env"), path.join(repoRoot, "selected.env"));
+        guardEnv.COMPOSE_ENV_FILES = path.join(repoRoot, "selected.env");
+      }
+      writeFileSync(dockerLog, "");
+      const guardedBackup = runScript(
+        BACKUP_SCRIPT,
+        [
+          "--repo-root",
+          repoRoot,
+          ...envFileArgs,
+          "--config-dir",
+          volumeConfigDir,
+          "--workspace-dir",
+          volumeWorkspaceDir,
+          "--auth-profile-secret-dir",
+          volumeSecretDir,
+          "--output-dir",
+          backupDir,
+          "--name",
+          "volume-rejected",
+          ...(noStop ? ["--no-stop"] : []),
+        ],
+        guardEnv,
+      );
+      expect(guardedBackup.status).not.toBe(0);
+      expect(guardedBackup.stderr).toContain("Docker-managed storage");
+      expect(guardedBackup.stderr).toContain(target);
+      expect(existsSync(path.join(backupDir, "volume-rejected.tar.gz"))).toBe(false);
+      const guardedRestore = runScript(
+        RESTORE_SCRIPT,
+        [
+          "--repo-root",
+          repoRoot,
+          ...envFileArgs,
+          "--archive",
+          archivePath,
+          "--config-dir",
+          volumeConfigDir,
+          "--workspace-dir",
+          volumeWorkspaceDir,
+          "--auth-profile-secret-dir",
+          volumeSecretDir,
+          ...(noStop ? ["--no-stop"] : []),
+        ],
+        guardEnv,
+      );
+      expect(guardedRestore.status).not.toBe(0);
+      expect(guardedRestore.stderr).toContain("Docker-managed storage");
+      expect(guardedRestore.stderr).toContain(target);
+      expect(readFileSync(path.join(volumeConfigDir, "original.json"), "utf8")).toBe("original\n");
+      expect(readFileSync(path.join(volumeWorkspaceDir, "original.txt"), "utf8")).toBe(
+        "original\n",
+      );
+      expect(readFileSync(path.join(volumeSecretDir, "original.key"), "utf8")).toBe("original\n");
+      expect(readFileSync(dockerLog, "utf8")).not.toMatch(/(?:stop|start|pause|unpause) /u);
+      expect(readFileSync(dockerStateFile, "utf8")).toBe("running\n");
+      if (composeFile !== "docker-compose.yml") {
+        await rename(path.join(repoRoot, composeFile), path.join(repoRoot, "docker-compose.yml"));
+      }
+      await writeFile(path.join(repoRoot, ".env"), originalEnv);
+      if (selection === "env-files") {
+        await unlink(path.join(repoRoot, "selected.env"));
+      }
+    }
 
     const maliciousStage = path.join(root, "malicious-archive-stage");
     const maliciousArchive = path.join(backupDir, "malicious.tar.gz");
@@ -635,10 +789,7 @@ esac
     await mkdir(repoRoot, { recursive: true });
     await writeFixtureFile(path.join(configDir, "openclaw.json"), "{}\n");
     await writeFixtureFile(path.join(workspaceDir, "digest.js"), "export {};\n");
-    const { binDir, composePath, dockerLog, dockerStateFile } = await writeDockerStub(
-      root,
-      repoRoot,
-    );
+    const { binDir, dockerLog, dockerStateFile } = await writeDockerStub(root, repoRoot);
 
     const backup = runScript(
       BACKUP_SCRIPT,
@@ -665,8 +816,8 @@ esac
     expect(backup.status).not.toBe(0);
     expect(existsSync(path.join(backupDir, "failed.tar.gz"))).toBe(false);
     const dockerCalls = readFileSync(dockerLog, "utf8");
-    const stopCall = `compose -f ${composePath} stop openclaw-gateway`;
-    const startCall = `compose -f ${composePath} start openclaw-gateway`;
+    const stopCall = `compose --project-directory ${repoRoot} stop openclaw-gateway`;
+    const startCall = `compose --project-directory ${repoRoot} start openclaw-gateway`;
     expect(dockerCalls.indexOf(stopCall)).toBeGreaterThanOrEqual(0);
     expect(dockerCalls.indexOf(startCall)).toBeGreaterThan(dockerCalls.indexOf(stopCall));
   });
