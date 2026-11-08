@@ -15,6 +15,7 @@ import { PROXY_FIXTURE_CERTIFICATE, PROXY_FIXTURE_KEY } from "openclaw/plugin-sd
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CODEX_INFERENCE_GENERATION_KEY } from "./inference-context.js";
 import { createCodexInferenceProxy, type CodexInferenceProxy } from "./inference-proxy.js";
+import { MAX_BODY_BYTES } from "./inference-upload.js";
 import { isJsonObject } from "./protocol.js";
 
 const transport = vi.hoisted(() => ({ origin: "" }));
@@ -97,7 +98,11 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
-function post(body = Buffer.from(JSON.stringify(child)), headers: Record<string, string> = {}) {
+function post(
+  body = Buffer.from(JSON.stringify(child)),
+  headers: Record<string, string> = {},
+  options: { leaveOpen?: boolean } = {},
+) {
   const response = createDeferred<IncomingMessage>();
   const closed = createDeferred<void>();
   const req = request(
@@ -113,7 +118,25 @@ function post(body = Buffer.from(JSON.stringify(child)), headers: Record<string,
   req.once("socket", (socket) => {
     socket.once("close", () => closed.resolve());
   });
-  req.end(body);
+  if (options.leaveOpen) {
+    let sending = true;
+    const stop = () => {
+      sending = false;
+      req.off("drain", writeMore);
+    };
+    const writeMore = () => {
+      if (!sending) {
+        return;
+      }
+      while (!req.destroyed && req.write(Buffer.alloc(64 * 1024, 32))) {}
+    };
+    req.on("drain", writeMore);
+    req.once("close", stop);
+    void response.promise.then(stop, stop);
+    req.write(body);
+  } else {
+    req.end(body);
+  }
   return { req, response: response.promise, closed: closed.promise };
 }
 
@@ -132,6 +155,49 @@ async function waitForUpstreamClose() {
 }
 
 describe("inference HTTP transport ownership", () => {
+  it.each([
+    [
+      "decodes",
+      () => zstdCompressSync(Buffer.alloc(MAX_BODY_BYTES + 1, 32)),
+      { "content-encoding": "zstd" },
+      {},
+    ],
+    ["uploads", () => Buffer.alloc(MAX_BODY_BYTES + 1, 32), {}, {}],
+    ["streams unfinished", () => Buffer.alloc(MAX_BODY_BYTES + 1, 32), {}, { leaveOpen: true }],
+  ] as const)(
+    "rejects a request that %s past the body limit as a terminal size error",
+    async (_kind, body, headers, options) => {
+      let forwarded = false;
+      handle = (_req, res) => {
+        forwarded = true;
+        res.end("synthetic completion");
+      };
+      const upload = post(body(), headers, options);
+      try {
+        const response = await upload.response;
+        expect(response.statusCode).toBe(400);
+        expect(response.headers["content-type"]).toBe("application/json");
+        expect(JSON.parse((await readBody(response)).toString())).toEqual({
+          type: "error",
+          status: 400,
+          error: {
+            type: "invalid_request_error",
+            code: "request_too_large",
+            message: expect.stringContaining("Request exceeds the maximum size"),
+          },
+        });
+        expect(forwarded).toBe(false);
+        if ("leaveOpen" in options) {
+          expect(upload.req.writableEnded).toBe(false);
+          upload.req.end();
+        }
+        await upload.closed;
+      } finally {
+        upload.req.destroy();
+      }
+    },
+  );
+
   it("preserves guarded TLS, length, auth and SSE when rewriting zstd requests", async () => {
     const registration = proxy.context.register({
       threadId: "root",

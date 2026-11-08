@@ -8,6 +8,7 @@ import {
   sliceUtf16Safe,
 } from "openclaw/plugin-sdk/text-utility-runtime";
 import { failedToolResult } from "./dynamic-tool-response-state.js";
+import { CODEX_IMAGE_BATCH_MAX_BYTES, codexInlineImageBytes } from "./image-budget.js";
 import { invalidInlineImageText } from "./image-payload-sanitizer.js";
 import type { CodexDynamicToolCallOutputContentItem } from "./protocol.js";
 
@@ -73,10 +74,29 @@ export function convertToolContents(
   rawContent: Array<TextContent | ImageContent>,
   maxChars: number,
 ): CodexDynamicToolCallOutputContentItem[] {
-  // Adjacent text items form one model-visible stream, so sanitize each full run before
-  // repartitioning and budgeting. Image blocks keep their bytes; the storage-oriented
-  // whole-result branch of sanitizeToolResult would drop them.
-  const content = sanitizeToolTextRuns(rawContent);
+  // Keep accepted image bytes intact; whole-result storage sanitation would drop them.
+  let imageBytes = 0;
+  let omittedImages = 0;
+  const boundedContent = rawContent.filter((item) => {
+    if (item.type !== "image") {
+      return true;
+    }
+    const bytes = codexInlineImageBytes(item);
+    if (imageBytes + bytes > CODEX_IMAGE_BATCH_MAX_BYTES) {
+      omittedImages++;
+      return false;
+    }
+    imageBytes += bytes;
+    return true;
+  });
+  if (omittedImages) {
+    // Keep the omission notice ahead of text truncation so its disposition remains visible.
+    boundedContent.unshift({
+      type: "text",
+      text: `[OpenClaw omitted ${omittedImages} tool image(s): the 8 MiB image budget was exceeded. Use narrower, read-only image inspection; do not repeat completed actions.]`,
+    });
+  }
+  const content = sanitizeToolTextRuns(boundedContent);
   const totalTextChars = content.reduce(
     (total, item) => total + (item.type === "text" ? item.text.length : 0),
     0,

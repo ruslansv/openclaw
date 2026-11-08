@@ -1,4 +1,4 @@
-import type { IncomingHttpHeaders } from "node:http";
+import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
 import { rejectWebSocketUpgrade } from "openclaw/plugin-sdk/websocket-runtime";
 
@@ -30,6 +30,36 @@ export function rejectBusyUpgrade(socket: Duplex) {
     headers: { "Retry-After": "1" },
     body: { contentType: "application/json", text: OVERLOAD_BODY },
   });
+}
+
+/** Drain an unfinished upload so its terminal refusal arrives before a TCP reset. */
+export function respondToRefusedUpload(
+  req: IncomingMessage,
+  res: ServerResponse,
+  body: string,
+): void {
+  const socket = req.socket;
+  const timer = setTimeout(() => socket.destroy(), 1_000);
+  timer.unref();
+  const cleanup = () => {
+    clearTimeout(timer);
+    req.off("end", finish);
+    socket.off("close", cleanup);
+  };
+  const finish = () => {
+    cleanup();
+    socket.end();
+  };
+  socket.once("close", cleanup);
+  res.removeHeader("Connection");
+  res.shouldKeepAlive = true;
+  res.writeHead(400, { "content-type": "application/json" }).end(body);
+  if (req.complete) {
+    finish();
+  } else {
+    req.once("end", finish);
+    req.resume();
+  }
 }
 
 export function relayHeaders(input: IncomingHttpHeaders): Record<string, string> {

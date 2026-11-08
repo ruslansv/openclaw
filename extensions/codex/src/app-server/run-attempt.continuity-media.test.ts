@@ -11,12 +11,14 @@ import { createSolidPngBuffer } from "openclaw/plugin-sdk/test-fixtures";
 import { describe, expect, it, vi } from "vitest";
 import { readAttemptTerminal } from "./attempt-terminal.test-helper.js";
 import {
+  assistantMessage,
   bindProductionHarnessHostCapabilitiesForTest,
   createParams,
   createResumeHarness,
   runCodexAppServerAttempt,
   setupRunAttemptTestHooks,
   tempDir,
+  threadStartResult,
 } from "./run-attempt-test-harness.js";
 import { writeCodexAppServerBinding } from "./session-binding.test-helpers.js";
 import { attachSqliteSessionTarget } from "./sqlite-session.test-helpers.js";
@@ -257,4 +259,130 @@ describe("Codex attachment continuity", () => {
       }
     },
   );
+  it("starts a text continuation without changing saved history or replaying historical pixels", async () => {
+    const sessionId = "image-pressure-handoff";
+    const params = createParams(`agent:main:${sessionId}`, path.join(tempDir, "workspace"));
+    params.agentDir = path.join(tempDir, "agent");
+    params.model = { ...params.model, input: ["text", "image"] };
+    params.prompt = "Continue from the saved artifact and inspect this new image.";
+    const historicalImage = {
+      type: "image" as const,
+      mimeType: "image/png",
+      data: createSolidPngBuffer(1, 1, { r: 0, g: 0, b: 255 }).toString("base64"),
+    };
+    const currentImage = {
+      ...historicalImage,
+      data: createSolidPngBuffer(1, 1, { r: 0, g: 255, b: 0 }).toString("base64"),
+    };
+    params.images = [currentImage];
+    await attachSqliteSessionTarget(params, path.join(tempDir, "history.sqlite"), sessionId);
+    const target = {
+      agentId: "main",
+      sessionId,
+      sessionKey: params.sessionKey!,
+      storePath: params.sessionTarget!.storePath!,
+    };
+    const priorMessages = [
+      {
+        role: "user" as const,
+        timestamp: 1,
+        content: [{ type: "text" as const, text: "Save the inspected artifact." }, historicalImage],
+      },
+      {
+        ...assistantMessage("", 2),
+        content: [
+          { type: "toolCall" as const, id: "saved-artifact-call", name: "write", arguments: {} },
+        ],
+        stopReason: "toolUse" as const,
+      },
+      {
+        role: "toolResult" as const,
+        toolCallId: "saved-artifact-call",
+        toolName: "write",
+        content: [
+          {
+            type: "text" as const,
+            text: "Artifact receipt 74: saved successfully; do not recreate.",
+          },
+        ],
+        isError: false,
+        timestamp: 3,
+      },
+      assistantMessage("The artifact is saved; inspect the next image.", 4),
+    ];
+    for (const message of priorMessages) {
+      await appendSessionTranscriptMessageByIdentity({
+        ...target,
+        message,
+        now: message.timestamp,
+      });
+    }
+    const originalEvents = await readSessionTranscriptEvents(target);
+    const rolloutDir = path.join(params.agentDir, "codex-home", "sessions");
+    await fs.mkdir(rolloutDir, { recursive: true });
+    const rolloutPath = path.join(rolloutDir, "rollout-thread-existing.jsonl");
+    const rollout =
+      JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "x".repeat(20 * 1024 * 1024) }],
+        },
+      }) + "\n";
+    await fs.writeFile(rolloutPath, rollout);
+    await writeCodexAppServerBinding(params.sessionFile, {
+      threadId: "thread-existing",
+      cwd: params.workspaceDir,
+      model: params.modelId,
+      modelProvider: "openai",
+      rolloutPath,
+      historyCoveredThrough: new Date(5).toISOString(),
+      dynamicToolsFingerprint: "[]",
+      webSearchThreadConfigFingerprint: JSON.stringify({
+        "features.standalone_web_search": false,
+        web_search: "disabled",
+      }),
+    });
+    const closeHost = await bindProductionHarnessHostCapabilitiesForTest(params);
+    const abort = new AbortController();
+    params.abortSignal = abort.signal;
+    vi.useFakeTimers();
+    const harness = createResumeHarness("thread-existing", async (method) =>
+      method === "thread/start" ? threadStartResult() : undefined,
+    );
+    const run = runCodexAppServerAttempt(params);
+    try {
+      await run.waitForTurnAccepted();
+      const request = harness.requests.find((entry) => entry.method === "turn/start");
+      if (!request) {
+        throw new Error("Native turn/start request was not observed");
+      }
+      const { threadId, input } = request.params as {
+        threadId: string;
+        input: Array<{ type: string; text?: string; url?: string }>;
+      };
+      await harness.completeTurn({ threadId, turnId: "turn-1" });
+      await run;
+      expect(harness.requests.some((entry) => entry.method === "thread/start")).toBe(true);
+      expect(harness.requests.some((entry) => entry.method === "thread/resume")).toBe(false);
+      const text = input.map((part) => part.text ?? "").join("\n");
+      expect(text).toContain("Save the inspected artifact.");
+      expect(text).toContain("Artifact receipt 74: saved successfully; do not recreate.");
+      expect(text).toContain("saved-artifact-call");
+      expect(text).toContain("The artifact is saved; inspect the next image.");
+      expect(text).toContain(params.prompt);
+      expect(input.filter((part) => part.type === "image")).toEqual([
+        { type: "image", url: `data:image/png;base64,${currentImage.data}` },
+      ]);
+      expect((await readSessionTranscriptEvents(target)).slice(0, originalEvents.length)).toEqual(
+        originalEvents,
+      );
+      expect(await fs.readFile(rolloutPath, "utf8")).toBe(rollout);
+    } finally {
+      abort.abort("test cleanup");
+      await run.catch(() => undefined);
+      closeHost();
+    }
+  });
 });

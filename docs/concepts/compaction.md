@@ -163,10 +163,14 @@ triggers normal local compaction before a run if transcript history reaches
 that size. This is useful for long-running sessions where provider-side context
 management may keep model context healthy while persisted transcript history
 keeps growing. Set a positive byte count or size string such as `"20mb"` to opt
-in; `0` or an unset value disables the guard. It does not split raw bytes; it
+in; `0` disables the guard. An unset value disables the built-in runtime's guard;
+native Codex sessions use a 20 MiB rollout limit by default. It does not split raw bytes; it
 asks the normal compaction pipeline to create a semantic summary. For Codex
 app-server sessions, the same threshold caps native rollout transcripts and
-oversized native threads restart fresh.
+oversized native threads continue on a fresh thread with bounded text history and
+completed tool-result context. Original transcripts and attachments remain saved.
+Historical image pixels are omitted from that handoff so the new thread does not
+immediately reproduce the oversized request. Current images remain separate.
 
 <Warning>
 The byte guard applies to the active SQLite transcript history. Legacy JSONL

@@ -17,6 +17,7 @@ import {
 import { createCodexInferenceContext } from "./inference-context.js";
 import {
   authorizationFailure,
+  requestTooLargeFailure,
   CODEX_INFERENCE_TRANSPORT_FAILURE as FAILURE,
   createCodexInferenceDispatch,
   isTerminalResponse,
@@ -29,6 +30,7 @@ import {
   OVERLOAD_HEADERS,
   rejectBusyUpgrade,
   relayHeaders,
+  respondToRefusedUpload,
 } from "./inference-proxy-http.js";
 import {
   createUploadAdmission,
@@ -334,8 +336,11 @@ export async function createCodexInferenceProxy(params: {
         // Errors can contain headers, bodies, or the private URL: never log/reflect them.
         if (!res.headersSent && !res.destroyed) {
           const denied = authorizationFailure(error);
+          const tooLarge = requestTooLargeFailure(error);
           if (denied) {
             res.writeHead(403, { "content-type": "application/json" }).end(denied);
+          } else if (tooLarge) {
+            respondToRefusedUpload(req, res, tooLarge);
           } else {
             res.writeHead(502, { "content-type": "text/plain" }).end(FAILURE);
           }
@@ -643,9 +648,9 @@ export async function createCodexInferenceProxy(params: {
                     await forward(frame);
                   } catch (error) {
                     prepared?.release();
-                    const denied = authorizationFailure(error);
-                    if (denied && accepted.readyState === WebSocket.OPEN) {
-                      accepted.send(denied, { binary: false }, close);
+                    const refused = authorizationFailure(error) ?? requestTooLargeFailure(error);
+                    if (refused && accepted.readyState === WebSocket.OPEN) {
+                      accepted.send(refused, { binary: false }, close);
                     } else {
                       close();
                     }

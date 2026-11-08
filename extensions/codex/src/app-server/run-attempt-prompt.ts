@@ -165,7 +165,12 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
       prompt: params.prompt,
       maxRenderedContextChars: codexContinuityProjectionMaxChars,
       toolPayloadMode:
-        params.pluginRuntimeRefreshMessages || preserveForkedToolResults ? "preserve" : "elide",
+        params.pluginRuntimeRefreshMessages ||
+        preserveForkedToolResults ||
+        mutable.rotatedForByteLimit
+          ? "preserve"
+          : "elide",
+      ...(mutable.rotatedForByteLimit ? { maxHistoricalImageBytes: 0 } : {}),
       prepareFileContext,
       currentUserTurnIdempotencyKey,
     });
@@ -231,9 +236,11 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
         toolPayloadMode:
           contextEngineProjection ||
           params.pluginRuntimeRefreshMessages ||
-          preserveForkedToolResults
+          preserveForkedToolResults ||
+          mutable.rotatedForByteLimit
             ? "preserve"
             : "elide",
+        ...(mutable.rotatedForByteLimit ? { maxHistoricalImageBytes: 0 } : {}),
         ...(projectionDecision.project ? { prepareFileContext } : {}),
         currentUserTurnIdempotencyKey,
       });
@@ -579,6 +586,7 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
       }),
     });
     mutable.startupBinding = startupBindingResolution.binding;
+    mutable.rotatedForByteLimit ||= startupBindingResolution.rotatedForByteLimit;
     mutable.startupContextTokens = startupBindingResolution.startupContextTokens;
     if (mutable.startupBinding?.threadId) {
       return;
@@ -587,7 +595,10 @@ export async function prepareCodexAttemptPrompt(context: CodexAttemptContext) {
     promptState.staleBindingContinuityForcedFreshStart =
       promptState.precomputedStaleBindingContinuityProjectionApplied &&
       !promptState.inactiveThreadBootstrapBindingForcedFreshStart;
-    if (promptState.staleBindingContinuityForcedFreshStart) {
+    if (
+      promptState.staleBindingContinuityForcedFreshStart ||
+      (!activeContextEngine && mutable.rotatedForByteLimit)
+    ) {
       await applyContinuityProjection(historyState.messages);
     }
     if (activeContextEngine) {

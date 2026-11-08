@@ -1,6 +1,10 @@
-import type { EmbeddedRunAttemptParamsV2 as EmbeddedRunAttemptParams } from "openclaw/plugin-sdk/agent-harness-runtime";
+import {
+  AgentHarnessPreflightError,
+  type EmbeddedRunAttemptParamsV2 as EmbeddedRunAttemptParams,
+} from "openclaw/plugin-sdk/agent-harness-runtime";
 import { sanitizeInlineImageDataUrl } from "openclaw/plugin-sdk/inline-image-data-url-runtime";
 import type { CodexProjectedImageGroup } from "./context-engine-projection.js";
+import { CODEX_IMAGE_BATCH_MAX_BYTES, codexInlineImageBytes } from "./image-budget.js";
 import { invalidInlineImageText } from "./image-payload-sanitizer.js";
 import type { CodexUserInput } from "./protocol.js";
 
@@ -29,6 +33,14 @@ export function buildCodexUserInput(
   contextImageGroups?: CodexProjectedImageGroup[],
   historyProvenancePrefix?: string,
 ): CodexUserInput[] {
+  if (
+    (images ?? []).reduce((bytes, image) => bytes + codexInlineImageBytes(image), 0) >
+    CODEX_IMAGE_BATCH_MAX_BYTES
+  ) {
+    const message =
+      "Current image attachments exceed the 8 MiB Codex input budget. Send fewer or smaller images in separate messages.";
+    throw new AgentHarnessPreflightError(message, { scope: "harness", userMessage: message });
+  }
   if (text !== undefined && contextImageGroups?.length) {
     let offset = 0;
     const input = contextImageGroups.flatMap((group) => {

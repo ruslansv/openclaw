@@ -11,6 +11,7 @@ import type { ImageContent } from "openclaw/plugin-sdk/llm";
 import { redactSensitiveFieldValue, redactToolPayloadText } from "openclaw/plugin-sdk/logging-core";
 import { asFiniteNumber } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { sliceUtf16Safe, truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
+import { CODEX_HISTORY_IMAGE_MAX_BYTES, codexInlineImageBytes } from "./image-budget.js";
 
 type CodexContextProjection = {
   developerInstructionAddition?: string;
@@ -117,6 +118,7 @@ export async function projectContextEngineAssemblyForCodex(params: {
   prompt: string;
   systemPromptAddition?: string;
   maxRenderedContextChars?: number;
+  maxHistoricalImageBytes?: number;
   toolPayloadMode?: "elide" | "preserve";
   prepareFileContext?: PrepareContextFile;
   currentUserTurnIdempotencyKey?: string;
@@ -131,6 +133,7 @@ export async function projectContextEngineAssemblyForCodex(params: {
       maxTextPartChars: resolveTextPartMaxChars(maxRenderedContextChars),
       toolPayloadMode: params.toolPayloadMode ?? "elide",
       maxRenderedContextChars,
+      maxHistoricalImageBytes: params.maxHistoricalImageBytes ?? CODEX_HISTORY_IMAGE_MAX_BYTES,
       prepareFileContext: params.prepareFileContext,
       currentUserTurnIdempotencyKey: params.currentUserTurnIdempotencyKey,
     },
@@ -411,12 +414,14 @@ async function renderMessagesForCodexContext(
     maxTextPartChars: number;
     toolPayloadMode: "elide" | "preserve";
     maxRenderedContextChars: number;
+    maxHistoricalImageBytes: number;
     prepareFileContext?: PrepareContextFile;
     currentUserTurnIdempotencyKey?: string;
   },
 ): Promise<{ text: string; imageGroups: CodexProjectedImageGroup[] }> {
   const tail: Array<{ text: string; separatorLength: number; images?: ImageContent[] }> = [];
   let retainedImageChars = 0;
+  let retainedImageBytes = 0;
   let totalChars = 0;
   let retainedChars = 0;
   // Count the discarded prefix for the existing marker, but never materialize the
@@ -439,13 +444,20 @@ async function renderMessagesForCodexContext(
     // Use the shared image estimate; native image payloads consume context too.
     const imageChars =
       (files?.images.length ?? 0) * IMAGE_BLOCK_TOKENS * APPROX_RENDERED_CHARS_PER_TOKEN;
-    const imagesFit = imageChars < remaining;
+    const imageBytes = (files?.images ?? []).reduce(
+      (bytes, image) => bytes + codexInlineImageBytes(image),
+      0,
+    );
+    const imageBytesFit = retainedImageBytes + imageBytes <= options.maxHistoricalImageBytes;
+    const imagesFit = imageChars < remaining && imageBytesFit;
     const acceptedImageChars = imagesFit ? imageChars : 0;
     const text = [
       renderMessageBody(message, { ...options, mediaPrepared: files !== undefined }),
       files?.text ? truncateText(files.text, options.maxTextPartChars) : undefined,
       imageChars > 0 && !imagesFit
-        ? "[Attachment images omitted: context budget exceeded]"
+        ? imageBytesFit
+          ? "[Attachment images omitted: context budget exceeded]"
+          : "[Attachment images omitted: image byte budget exceeded; original attachments remain saved]"
         : undefined,
     ]
       .filter(Boolean)
@@ -473,6 +485,9 @@ async function renderMessagesForCodexContext(
       });
       retainedChars += retained.length + acceptedImageChars;
       retainedImageChars += acceptedImageChars;
+      if (imagesFit && retained.length === chunk.length) {
+        retainedImageBytes += imageBytes;
+      }
     }
   }
   const ordered = tail.toReversed();

@@ -79,7 +79,7 @@ describe("Codex app-server startup binding", () => {
     );
   }
 
-  it("does not use a default byte limit when maxActiveTranscriptBytes is unset", async () => {
+  it("reuses a small native transcript when maxActiveTranscriptBytes is unset", async () => {
     const sessionFile = path.join(tempDir, "session.jsonl");
     const workspaceDir = path.join(tempDir, "workspace");
     const agentDir = path.join(tempDir, "agent");
@@ -101,6 +101,29 @@ describe("Codex app-server startup binding", () => {
     expect(binding?.threadId).toBe("thread-existing");
     const savedBinding = await readCodexAppServerBinding(sessionFile);
     expect(savedBinding?.threadId).toBe("thread-existing");
+  });
+
+  it("rotates an oversized native transcript by default without deleting its saved history", async () => {
+    const sessionFile = path.join(tempDir, "session.jsonl");
+    const agentDir = path.join(tempDir, "agent");
+    await writeExistingBinding(sessionFile, path.join(tempDir, "workspace"));
+    const rolloutDir = path.join(agentDir, "codex-home", "sessions");
+    await fs.mkdir(rolloutDir, { recursive: true });
+    const rollout = path.join(rolloutDir, "rollout-thread-existing.jsonl");
+    await fs.writeFile(rollout, "saved native history");
+    await fs.truncate(rollout, 20 * 1024 * 1024);
+    const result = await resolveCodexAppServerStartupBinding({
+      binding: await readCodexAppServerBinding(sessionFile),
+      sessionFile,
+      agentDir,
+      config: undefined,
+    });
+    expect(result.binding).toBeUndefined();
+    expect(result.rotatedForByteLimit).toBe(true);
+    expect((await fs.stat(rollout)).size).toBe(20 * 1024 * 1024);
+    expect(await fs.readFile(rollout, { encoding: "utf8" }).then((text) => text.slice(0, 20))).toBe(
+      "saved native history",
+    );
   });
 
   it.each(

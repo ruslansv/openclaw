@@ -85,6 +85,28 @@ parent-local instructions keep their native JSON bytes, including existing zstd
 compression on HTTP. Requests with parent-local instructions still receive the
 same bounded instruction injection.
 
+Image-heavy conversations also have byte budgets independent of token counts.
+Historical attachment projection keeps at most 4 MiB of encoded image data and
+marks omitted images while retaining their attachment references. Current user
+image batches have an 8 MiB budget; larger batches are refused before native turn
+submission with guidance to send fewer or smaller images. Tool results retain
+their text and admitted images, with an explicit notice when their image batch
+exceeds 8 MiB. Inspect omitted tool images with narrower read-only requests rather
+than repeating completed actions.
+
+The native rollout guard defaults to 20 MiB. At the next turn boundary, an
+oversized ordinary thread hands off bounded text and completed tool-result context
+to a fresh thread, preserving saved history and original attachments. The handoff
+does not reattach historical image pixels. Supervised and protected native
+ownership keeps its existing replacement restrictions. The existing
+`agents.defaults.compaction.maxActiveTranscriptBytes` setting overrides this
+default; an explicit `0` disables proactive byte rotation.
+
+The final relay limit remains 32 MiB for wire, decoded, and rewritten requests.
+Oversized requests return a terminal `400 request_too_large` instead of a retryable 502. A single long native tool turn can still reach that bound; its completed tool
+effects settle normally, and a later request can continue through the guarded
+handoff. This does not automatically replay tools or edit old native history.
+
 Desktop executable selection and Computer Use permissions stay unchanged. The
 relay belongs to the direct stdio process OpenClaw starts, not to the Desktop
 application's other conversations.

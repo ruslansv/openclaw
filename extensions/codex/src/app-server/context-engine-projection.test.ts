@@ -43,6 +43,44 @@ function summaryMessages(type: "compaction" | "branch_summary", summary: string)
 }
 
 describe("projectContextEngineAssemblyForCodex", () => {
+  it("bounds historical image bytes while keeping recent images and attachment references", async () => {
+    const older = textMessage("user", "older saved image");
+    const recent = textMessage("user", "recent saved image");
+    const image = {
+      type: "image" as const,
+      mimeType: "image/png",
+      data: "A".repeat(3 * 1024 * 1024),
+    };
+    const result = await projectContextEngineAssemblyForCodex({
+      assembledMessages: [older, recent],
+      prompt: "continue",
+      maxRenderedContextChars: 100_000,
+      prepareFileContext: async (message) => ({
+        text: message === older ? "Saved attachment: older.png" : "Saved attachment: recent.png",
+        images: [image],
+      }),
+    });
+    expect(result.imageGroups?.map((group) => group.images.length)).toEqual([1]);
+    expect(result.promptText).toContain("Saved attachment: older.png");
+    expect(result.promptText).toContain("Attachment images omitted: image byte budget exceeded");
+  });
+
+  it("uses text attachment continuity after image-pressure rotation", async () => {
+    const result = await projectContextEngineAssemblyForCodex({
+      assembledMessages: [textMessage("user", "saved diagram")],
+      prompt: "continue the saved work",
+      maxHistoricalImageBytes: 0,
+      prepareFileContext: async () => ({
+        text: "Saved attachment: diagram.png",
+        images: [{ type: "image", mimeType: "image/png", data: "AAAA" }],
+      }),
+    });
+    expect(result.imageGroups?.length ?? 0).toBe(0);
+    expect(result.promptText).toContain("Saved attachment: diagram.png");
+    expect(result.promptText).toContain("Attachment images omitted: image byte budget exceeded");
+    expect(result.promptText).toContain("continue the saved work");
+  });
+
   it("charges restored file content to the selected window before reading older attachments", async () => {
     const older = textMessage("user", "older attachment");
     const recent = textMessage("user", "recent attachment");

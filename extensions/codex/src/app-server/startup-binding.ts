@@ -16,6 +16,7 @@ import {
 } from "openclaw/plugin-sdk/file-access-runtime";
 import { resolveCodexAppServerHomeDir } from "./auth-bridge.js";
 import { resolveProjectionPromptBudgetTokens } from "./context-engine-projection.js";
+import { CODEX_NATIVE_TRANSCRIPT_DEFAULT_MAX_BYTES } from "./image-budget.js";
 import { isJsonObject, type JsonValue } from "./protocol.js";
 import {
   assertCodexBindingMayBeReplaced,
@@ -308,6 +309,7 @@ export async function rotateOversizedCodexAppServerStartupBinding(params: {
 }): Promise<{
   binding: CodexAppServerThreadBinding | undefined;
   startupContextTokens?: number;
+  rotatedForByteLimit?: true;
 }> {
   const binding = params.binding;
   if (!binding?.threadId) {
@@ -339,7 +341,9 @@ export async function rotateOversizedCodexAppServerStartupBinding(params: {
     binding.rolloutPath,
   );
   const compaction = params.config?.agents?.defaults?.compaction;
-  const maxBytes = parseCodexAppServerByteLimit(compaction?.maxActiveTranscriptBytes);
+  const maxBytes = parseCodexAppServerByteLimit(
+    compaction?.maxActiveTranscriptBytes ?? CODEX_NATIVE_TRANSCRIPT_DEFAULT_MAX_BYTES,
+  );
   const shouldDeferByteGuard =
     maxBytes !== undefined &&
     params.contextEngineActive === true &&
@@ -375,7 +379,7 @@ export async function rotateOversizedCodexAppServerStartupBinding(params: {
           files: oversizedFiles.map((file) => ({ path: file.path, bytes: file.bytes })),
         },
       );
-      return await clearBinding();
+      return { ...(await clearBinding()), rotatedForByteLimit: true };
     }
   }
   const nativeTokenSnapshots = await Promise.all(

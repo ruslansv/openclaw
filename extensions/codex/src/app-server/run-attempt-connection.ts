@@ -513,6 +513,7 @@ export async function prepareCodexAttemptConnection({ params, options }: CodexRu
     const mutable = {
       startupBinding,
       startupContextTokens: startupBindingResolution.startupContextTokens,
+      rotatedForByteLimit: startupBindingResolution.rotatedForByteLimit,
       pluginAppServer: appServer,
       // Captured before rotation: a rotated-away thread's observed density is the
       // best available sample for sizing the fresh thread's continuity projection.
